@@ -44,7 +44,7 @@ library.
 > `sys.path` for `snakemake_executor_plugin_*` packages, so a modern PEP 660
 > editable install (a meta-path finder with no real directory) is **invisible**
 > and `--executor shared-local` will report the package as not installed. Use
-> `pip install -e . --config-setings editable_mode=compat`, a plain
+> `pip install -e . --config-settings editable_mode=compat`, a plain
 > `pip install .`, or put `src/` on `PYTHONPATH`.
 
 ---
