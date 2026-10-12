@@ -1,0 +1,50 @@
+# pixi project for local development.
+#
+# pixi is optional; a plain virtualenv works too. Using pixi gives reproducible
+# environments for the three tasks that matter: running the tests, linting, and
+# building the distribution.
+#
+#   pixi run test
+#   pixi run lint
+#   pixi run build
+
+[workspace]
+channels = ["conda-forge", "bioconda"]
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+name = "snakemake-executor-plugin-shared-local"
+
+[dependencies]
+python = ">=3.11,<4"
+
+[pypi-dependencies]
+snakemake-executor-plugin-shared-local = { path = ".", editable = true }
+
+[feature.dev.pypi-dependencies]
+pytest = ">=7.4"
+pytest-cov = ">=4.1"
+# Guards against a test hanging forever, which matters because this plugin's whole
+# point is not hanging.
+pytest-timeout = ">=2.3"
+snakemake = ">=9.11"
+
+[feature.style.pypi-dependencies]
+ruff = ">=0.11"
+
+[feature.build.pypi-dependencies]
+build = "*"
+twine = "*"
+
+[environments]
+dev = { features = ["dev"], solve-group = "dev" }
+style = { features = ["style"], solve-group = "dev" }
+build = { features = ["build"], solve-group = "dev" }
+
+[tasks]
+test = { cmd = "pytest tests -q", feature = "dev", description = "Run the test suite" }
+# The integration tests launch real Snakemake subprocesses, so let coverage see
+# them by pointing each child at this manifest.
+coverage = { cmd = "pytest tests -q --cov=snakemake_executor_plugin_shared_local --cov-report=term-missing", feature = "dev", description = "Run tests with coverage" }
+lint = { cmd = "ruff check .", feature = "style", description = "Lint" }
+format = { cmd = "ruff format .", feature = "style", description = "Format" }
+build = { cmd = "python -m build", feature = "build", description = "Build sdist and wheel" }
+check-build = { cmd = "python -m twine check dist/*", feature = "build", depends-on = ["build"], description = "Validate the built artifacts" }

@@ -1,0 +1,74 @@
+[project]
+name = "snakemake-executor-plugin-shared-local"
+version = "0.1.0"
+description = "A Snakemake executor plugin that coordinates multiple local Snakemake instances sharing one machine."
+readme = "README.md"
+requires-python = ">=3.11,<4"
+license = { text = "MIT" }
+authors = [{ name = "ymq" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+keywords = ["snakemake", "plugin", "executor", "local", "shared", "scheduler", "resources"]
+dependencies = [
+    "snakemake-interface-common>=1.22,<2",
+    "snakemake-interface-executor-plugins>=9.3.9,<10",
+]
+
+[project.urls]
+Repository = "https://github.com/your/plugin"
+Documentation = "https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/shared-local.html"
+
+[project.optional-dependencies]
+dev = [
+    "snakemake>=9.11",
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.6",
+    "build",
+    "twine",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/snakemake_executor_plugin_shared_local"]
+
+[tool.coverage.run]
+omit = [".*", "*/site-packages/*", "Snakefile", "tests/*"]
+
+[tool.coverage.report]
+exclude_lines = ["pass", "\\.\\.\\.", "if TYPE_CHECKING:"]
+fail_under = 90
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py", "tests.py"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# UP007 rewrites Optional[X] into `X | None`. That form is NOT equivalent for this
+# plugin: Snakemake's CLI generator (snakemake_interface_common.plugin_registry)
+# unwraps optional fields with `typing.get_origin(t) is typing.Union`, and
+# `get_origin(str | None)` returns types.UnionType instead, so the rewritten
+# annotation makes `--shared-local-dir` fail with
+# "ValueError: str | None is not callable" at argparse time. Keep Optional[X].
+ignore = ["UP007", "UP045"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/_coverage_boot/*" = ["D", "I", "F"]

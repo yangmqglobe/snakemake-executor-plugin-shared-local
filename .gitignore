@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+.coverage
+coverage.xml
+coverage-report/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pixi/
+.snakemake/
+*.snakemake/
+.DS_Store
