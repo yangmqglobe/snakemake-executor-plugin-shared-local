@@ -91,10 +91,61 @@ def test_resolve_defaults_without_config(tmp_path: Path):
     assert resolved.pool_cores is None
     assert resolved.pool_mem_mib is None
     assert resolved.pool_conflict == "error"
-    assert resolved.numa_bind is None  # auto
-    assert resolved.cgroup is None  # auto
+    assert resolved.numa_bind is None  # auto: enable on multi-node machines
+    assert resolved.cgroup is False  # auto: plugin default is OFF
     assert resolved.record_rule is True  # auto resolves per-namespace
     assert resolved.warnings == []
+
+
+class TestCgroupDefault:
+    """cgroup enforcement must be opt-in.
+
+    Turning it on implicitly would change how jobs fail (an over-allocation
+    becomes an OOM kill instead of a slowdown), which is not something a
+    coordination plugin should do without being asked.
+    """
+
+    def test_default_is_off(self, tmp_path: Path):
+        resolved = resolve_settings(FakeSettings(config=str(tmp_path / "missing.json")))
+        assert resolved.cgroup is False
+
+    def test_explicit_on_is_honoured(self, tmp_path: Path):
+        settings = FakeSettings(config=str(tmp_path / "missing.json"), cgroup="on")
+        assert resolve_settings(settings).cgroup is True
+
+    def test_explicit_off_is_honoured(self, tmp_path: Path):
+        settings = FakeSettings(config=str(tmp_path / "missing.json"), cgroup="off")
+        assert resolve_settings(settings).cgroup is False
+
+    def test_config_file_can_enable_it(self, tmp_path: Path):
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps({"cgroup": "on"}))
+        resolved = resolve_settings(FakeSettings(config=str(config)))
+        assert resolved.cgroup is True
+
+    def test_cli_off_beats_config_file_on(self, tmp_path: Path):
+        config = tmp_path / "config.json"
+        config.write_text(json.dumps({"cgroup": "on"}))
+        settings = FakeSettings(config=str(config), cgroup="off")
+        assert resolve_settings(settings).cgroup is False
+
+    def test_field_default_is_auto_not_on(self):
+        """The dataclass default feeds `pick`, so it must stay a sentinel."""
+        from snakemake_executor_plugin_shared_local import ExecutorSettings
+
+        assert ExecutorSettings.__dataclass_fields__["cgroup"].default == "auto"
+
+    def test_help_text_documents_off(self):
+        from snakemake_executor_plugin_shared_local import ExecutorSettings
+
+        help_text = ExecutorSettings.__dataclass_fields__["cgroup"].metadata["help"]
+        assert "OFF" in help_text or "off" in help_text
+
+
+def test_numa_default_is_auto(tmp_path: Path):
+    """NUMA placement is a default-on optimisation on multi-node machines."""
+    resolved = resolve_settings(FakeSettings(config=str(tmp_path / "missing.json")))
+    assert resolved.numa_bind is None
 
 
 def test_config_file_supplies_values(tmp_path: Path):

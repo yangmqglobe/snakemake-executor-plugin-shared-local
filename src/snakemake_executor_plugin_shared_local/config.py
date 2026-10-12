@@ -289,6 +289,14 @@ def resolve_settings(settings: Any) -> ResolvedSettings:
         # avoid disclosing rule names by default. Callers may force either way.
         record_rule = namespace != NAMESPACE_SYSTEM
 
+    # Plugin defaults. `auto` means "no explicit choice", so it resolves to the
+    # documented default rather than a hidden behaviour change. In particular
+    # cgroup enforcement is OFF by default: silently switching jobs to kernel-
+    # enforced limits (where an over-allocation becomes an OOM kill) would change
+    # the failure mode for users who never asked for it.
+    cgroup_request = parse_tri_state(pick("cgroup"), key="cgroup")
+    cgroup = False if cgroup_request is None else cgroup_request
+
     return ResolvedSettings(
         namespace=namespace,
         dir=pick("dir"),
@@ -310,7 +318,7 @@ def resolve_settings(settings: Any) -> ResolvedSettings:
         if not is_unset(pick("poll_interval"))
         else 0.05,
         numa_bind=parse_tri_state(pick("numa_bind"), key="numa_bind"),
-        cgroup=parse_tri_state(pick("cgroup"), key="cgroup"),
+        cgroup=cgroup,
         record_rule=record_rule,
         verbose_leases=bool(
             parse_tri_state(pick("verbose_leases"), key="verbose_leases")

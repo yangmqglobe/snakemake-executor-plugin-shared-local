@@ -205,7 +205,8 @@ job may use.
 
 ## Optional kernel enforcement (cgroup v2)
 
-By default coordination is advisory. With `--shared-local-cgroup on` (or `auto`),
+By default coordination is advisory. With `--shared-local-cgroup on` (or
+`"cgroup": "on"` in the config file),
 each job is wrapped in a systemd user scope so the kernel enforces the limits:
 
 ```console
@@ -280,7 +281,7 @@ Precedence is: explicit CLI flag, then config file, then auto-detection.
 | `--shared-local-admit-timeout` | `0` (wait forever) | Give up waiting after N seconds |
 | `--shared-local-poll-interval` | `0.05` | Seconds between admission attempts |
 | `--shared-local-numa-bind` | `auto` | `auto`, `on`, `off` |
-| `--shared-local-cgroup` | `auto` | `auto`, `on`, `off` |
+| `--shared-local-cgroup` | `auto` → **off** | `auto`, `on`, `off`; see below |
 | `--shared-local-require-mem` | `auto` | Fail when a job omits `mem_mb` |
 | `--shared-local-record-rule` | `auto` | Record rule names in leases (off in `system`) |
 | `--shared-local-gc-report` | `auto` | Report stale leases that could not be removed |

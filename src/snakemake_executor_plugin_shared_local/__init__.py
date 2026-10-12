@@ -171,8 +171,11 @@ class ExecutorSettings(ExecutorSettingsBase):
         metadata={
             "help": (
                 "Wrap jobs in a cgroup v2 scope so the kernel enforces CPU and memory "
-                "limits. 'auto' enables it when available, 'on' requires the attempt "
-                "(still degrading with a warning), 'off' (default) disables it."
+                "limits. 'auto' (default) applies the plugin default, which is OFF: "
+                "enabling kernel enforcement implicitly would change how failing jobs "
+                "fail for existing users. 'on' enables it, degrading to a warning if "
+                "cgroup v2, systemd-run or the D-Bus session is unavailable. 'off' "
+                "disables it."
             ),
         },
     )
@@ -332,19 +335,22 @@ class _SharedLocalExecutor:
         return True
 
     def _resolve_cgroup(self) -> bool:
-        request = self._sl_settings.cgroup
-        if request is False:
+        """Decide whether to enforce limits in the kernel for this run.
+
+        Resolution already applied the plugin default (off), so this only has to
+        deal with an explicit request: enable when the host supports it, and
+        otherwise warn and continue, because failing a workflow over an optional
+        hardening feature would be worse than running without it.
+        """
+        if not self._sl_settings.cgroup:
             return False
         support = cgroup_mod.probe(self.logger)
         self._sl_cgroup_support = support
         if support.available:
             return True
-        if request is True:
-            self.logger.warning(
-                f"cgroup enforcement was requested but is unavailable: {support.reason}"
-            )
-        else:
-            self.logger.debug(f"cgroup enforcement unavailable: {support.reason}")
+        self.logger.warning(
+            f"cgroup enforcement was requested but is unavailable: {support.reason}"
+        )
         return False
 
     # ------------------------------------------------------------------ leases

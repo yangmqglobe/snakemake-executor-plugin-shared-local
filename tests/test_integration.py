@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -66,6 +67,37 @@ def write_workflow(directory: Path, njobs: int, sleep: float, events: Path) -> P
     return directory
 
 
+_COVERAGE_BOOT_DIR: Path | None = None
+
+
+def _coverage_boot_dir() -> Path | None:
+    """Create (once) a directory holding a ``sitecustomize`` for coverage.
+
+    The integration tests launch real Snakemake subprocesses; without this they
+    would be invisible to coverage, and the executor wiring they exercise is
+    exactly what must not go unmeasured. The helper is written to a temporary
+    location rather than the repository so a read-only checkout still works.
+    """
+    global _COVERAGE_BOOT_DIR
+    if _COVERAGE_BOOT_DIR is not None:
+        return _COVERAGE_BOOT_DIR
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="shared-local-cov-"))
+        (directory / "sitecustomize.py").write_text(
+            "# Generated for subprocess coverage measurement.\n"
+            "try:\n"
+            "    import coverage\n"
+            "    coverage.process_startup()\n"
+            "except Exception:\n"
+            "    pass\n"
+        )
+    except OSError:
+        # Coverage of subprocesses is optional; never fail a test over it.
+        return None
+    _COVERAGE_BOOT_DIR = directory
+    return directory
+
+
 def run_instance(
     workdir: Path,
     leases: Path,
@@ -79,15 +111,10 @@ def run_instance(
 ) -> subprocess.Popen | subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(SRC) + os.pathsep + env.get("PYTHONPATH", "")
-    # Let coverage measure the subprocess too, otherwise the executor wiring this
-    # test is validating looks untested.
     if os.environ.get("COVERAGE_PROCESS_START"):
-        sitecustomize_dir = Path(__file__).resolve().parent / "_coverage_boot"
-        sitecustomize_dir.mkdir(exist_ok=True)
-        (sitecustomize_dir / "sitecustomize.py").write_text(
-            "import coverage; coverage.process_startup()\n"
-        )
-        env["PYTHONPATH"] = str(sitecustomize_dir) + os.pathsep + env["PYTHONPATH"]
+        boot = _coverage_boot_dir()
+        if boot is not None:
+            env["PYTHONPATH"] = str(boot) + os.pathsep + env["PYTHONPATH"]
     command = [
         SMK,
         "-s",
