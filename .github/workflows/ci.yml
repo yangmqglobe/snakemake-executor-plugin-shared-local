@@ -29,9 +29,9 @@ jobs:
           else
             pip install "snakemake~=${{ matrix.snakemake }}"
           fi
-          # A PEP 660 editable install is invisible to Snakemake's pkgutil-based
-          # plugin discovery, so install a real directory (see README).
-          pip install --no-deps -e . --config-settings editable_mode=compat
+          # Editable is fine here: hatchling writes a .pth holding the real src
+          # path, which Snakemake's pkgutil-based discovery can see.
+          pip install --no-deps -e .
 
       - name: Show versions
         run: |

@@ -40,12 +40,15 @@ Then select it with `--executor shared-local`. There are **no Python
 dependencies** beyond Snakemake's own plugin interfaces — everything is standard
 library.
 
-> **Developing the plugin itself?** Snakemake discovers plugins by scanning
-> `sys.path` for `snakemake_executor_plugin_*` packages, so a modern PEP 660
-> editable install (a meta-path finder with no real directory) is **invisible**
-> and `--executor shared-local` will report the package as not installed. Use
-> `pip install -e . --config-settings editable_mode=compat`, a plain
-> `pip install .`, or put `src/` on `PYTHONPATH`.
+> **Developing the plugin itself?** Snakemake discovers executor plugins by
+> scanning `sys.path` with `pkgutil.iter_modules()` for packages named
+> `snakemake_executor_plugin_*`. A regular or editable install both work: hatchling
+> (this project's backend) and setuptools defaults write a `.pth` file containing
+> the real source path, which `pkgutil` can see. If `--executor shared-local`
+> reports the package as not installed, you are most likely running from a tree
+> whose `src/` is not importable — put `src/` on `PYTHONPATH`, or run
+> `pip install .` — and note that a stale `snakemake_executor_plugin_shared_local`
+> in a *different* interpreter's `site-packages` will shadow what you expect.
 
 ---
 
@@ -311,7 +314,7 @@ Every setting also has a `SNAKEMAKE_SHARED_LOCAL_*` environment variable.
 ## Development
 
 ```console
-$ pip install -e . --config-settings editable_mode=compat
+$ pip install -e .
 $ pip install pytest pytest-cov pytest-timeout
 $ python -m pytest tests -q
 ```
