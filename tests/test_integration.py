@@ -236,6 +236,47 @@ class TestSingleInstance:
         # Must fail promptly; a hang previously lasted forever.
         assert elapsed < 45, f"took {elapsed:.1f}s, expected a fast failure"
 
+    def test_oversized_memory_job_fails_fast_instead_of_hanging(self, tmp_path):
+        """Memory must be arbitrated too, not just cores.
+
+        Regression: the pool published its memory dimension under a different name
+        than job requests used, and ``fits()`` treats an unknown dimension as
+        unconstrained - so this job was admitted despite a 50 MiB pool.
+        """
+        work = tmp_path / "wf"
+        work.mkdir(parents=True)
+        (work / "Snakefile").write_text(
+            "rule big:\n    output: 'mem.txt'\n    threads: 1\n"
+            "    resources: mem_mb=26000\n    shell: 'echo x > {output}'\n"
+        )
+        started = time.monotonic()
+        result = run_instance(
+            work,
+            tmp_path / "leases",
+            pool_cores=None,
+            options=("--shared-local-pool-mem", "50M"),
+            cores=4,
+            timeout=60,
+        )
+        elapsed = time.monotonic() - started
+        assert result.returncode != 0
+        assert "mem_mb=26000" in result.stdout
+        assert "shared-local-pool-mem" in result.stdout
+        assert elapsed < 45, f"took {elapsed:.1f}s, expected a fast failure"
+
+    def test_pool_memory_is_reflected_in_the_banner(self, tmp_path):
+        events = tmp_path / "events.log"
+        work = write_workflow(tmp_path / "wf", 1, 0.1, events)
+        result = run_instance(
+            work,
+            tmp_path / "leases",
+            pool_cores=4,
+            options=("--shared-local-pool-mem", "512M"),
+            cores=2,
+        )
+        assert result.returncode == 0, result.stdout
+        assert "mem=512 MiB" in result.stdout
+
     def test_cgroup_flag_is_accepted(self, tmp_path):
         events = tmp_path / "events.log"
         work = write_workflow(tmp_path / "wf", 1, 0.1, events)

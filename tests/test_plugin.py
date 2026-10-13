@@ -199,6 +199,101 @@ class TestRegistryIntegration:
                 sys.path.remove(src)
 
 
+class TestEnvironmentVariables:
+    """Every setting must be reachable through SNAKEMAKE_SHARED_LOCAL_*.
+
+    Snakemake only forwards ``env_var`` to its ``configargparse`` backend when the
+    field metadata opts in, so a missing flag makes the documented environment
+    variables silently inert. That was the second bug these tests pin.
+    """
+
+    def _fields(self):
+        from dataclasses import fields
+
+        module = importlib.import_module(MODULE_NAME)
+        return {f.name: f for f in fields(module.ExecutorSettings)}
+
+    def test_every_field_opts_into_env_vars(self):
+        for name, thefield in self._fields().items():
+            assert thefield.metadata.get("env_var") is True, (
+                f"{name} does not request an environment variable, so "
+                f"{name.upper()} would be advertised but ignored"
+            )
+
+    def _parse(self, argv, env=None):
+        """Build the real plugin parser and return resolved settings."""
+        import configargparse
+        from snakemake_interface_executor_plugins.registry import (
+            ExecutorPluginRegistry,
+        )
+
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        added = src not in sys.path
+        if added:
+            sys.path.insert(0, src)
+        try:
+            registry = ExecutorPluginRegistry()
+            registry.collect_plugins()
+            parser = configargparse.ArgumentParser()
+            registry.register_cli_args(parser)
+            # configargparse reads os.environ by default; pass it explicitly so
+            # the test does not depend on process-global mutation.
+            args = parser.parse_args(argv, env_vars=env if env is not None else {})
+            return registry.get_plugin("shared-local").get_settings(args)
+        finally:
+            if added:
+                sys.path.remove(src)
+
+    def test_env_var_sets_a_value(self):
+        settings = self._parse([], env={"SNAKEMAKE_SHARED_LOCAL_POOL_CORES": "96"})
+        assert settings.pool_cores == 96
+
+    def test_env_var_works_for_tri_state_fields(self):
+        settings = self._parse([], env={"SNAKEMAKE_SHARED_LOCAL_CGROUP": "on"})
+        assert settings.cgroup == "on"
+
+    def test_cli_overrides_the_env_var(self):
+        settings = self._parse(
+            ["--shared-local-pool-cores", "8"],
+            env={"SNAKEMAKE_SHARED_LOCAL_POOL_CORES": "96"},
+        )
+        assert settings.pool_cores == 8
+
+    def test_env_var_reaches_resolved_settings(self):
+        """The env var must land in the value resolve_settings actually uses."""
+        settings = self._parse([], env={"SNAKEMAKE_SHARED_LOCAL_POOL_CORES": "96"})
+        resolved = importlib.import_module(MODULE_NAME).resolve_settings(settings)
+        assert resolved.pool_cores == 96
+
+    def test_env_var_overrides_the_config_file(self, tmp_path):
+        """Precedence: the CLI/env layer outranks the plugin's JSON config file.
+
+        The JSON file is applied inside ``resolve_settings``, not by argparse, so
+        the assertion has to run through it to be meaningful.
+        """
+        module = importlib.import_module(MODULE_NAME)
+        config = tmp_path / "config.json"
+        config.write_text('{"pool_cores": 4}')
+        settings = self._parse(
+            ["--shared-local-config", str(config)],
+            env={"SNAKEMAKE_SHARED_LOCAL_POOL_CORES": "96"},
+        )
+        assert module.resolve_settings(settings).pool_cores == 96
+
+    def test_config_file_applies_when_the_env_var_is_absent(self, tmp_path):
+        module = importlib.import_module(MODULE_NAME)
+        config = tmp_path / "config.json"
+        config.write_text('{"pool_cores": 4}')
+        settings = self._parse(["--shared-local-config", str(config)], env={})
+        assert module.resolve_settings(settings).pool_cores == 4
+
+    def test_env_var_can_set_require_mem(self, tmp_path):
+        """A tri-state setting must be usable from the environment too."""
+        module = importlib.import_module(MODULE_NAME)
+        settings = self._parse([], env={"SNAKEMAKE_SHARED_LOCAL_REQUIRE_MEM": "on"})
+        assert module.resolve_settings(settings).require_mem is True
+
+
 class TestExecutorWiring:
     """Exercise the mixin's admission logic with a stubbed Snakemake side."""
 
@@ -249,7 +344,7 @@ class TestExecutorWiring:
         from snakemake_executor_plugin_shared_local.pool import Pool
 
         executor, _ = self._make_executor(tmp_path)
-        executor._sl_pool = Pool(cores=4, mem_mib=8000)
+        executor._sl_pool = Pool(cores=4, mem_mb=8000)
 
         class Job:
             threads = 3
@@ -264,7 +359,7 @@ class TestExecutorWiring:
         from snakemake_executor_plugin_shared_local.pool import Pool
 
         executor, _ = self._make_executor(tmp_path)
-        executor._sl_pool = Pool(cores=4, mem_mib=8000)
+        executor._sl_pool = Pool(cores=4, mem_mb=8000)
 
         class Job:
             threads = 1
@@ -282,7 +377,7 @@ class TestExecutorWiring:
 
         executor, _ = self._make_executor(tmp_path)
         executor._sl_settings.require_mem = True
-        executor._sl_pool = Pool(cores=4, mem_mib=8000)
+        executor._sl_pool = Pool(cores=4, mem_mb=8000)
 
         class Job:
             threads = 1
@@ -296,7 +391,7 @@ class TestExecutorWiring:
         from snakemake_executor_plugin_shared_local.pool import Pool
 
         executor, _ = self._make_executor(tmp_path)
-        executor._sl_pool = Pool(cores=8, mem_mib=8000)
+        executor._sl_pool = Pool(cores=8, mem_mb=8000)
         props = executor._sl_cgroup_properties({"cores": 2, "mem_mb": 300})
         assert "--property=CPUQuota=25%" in props
         assert "--property=MemoryMax=300M" in props
@@ -306,7 +401,7 @@ class TestExecutorWiring:
         from snakemake_executor_plugin_shared_local.pool import Pool
 
         executor, _ = self._make_executor(tmp_path)
-        executor._sl_pool = Pool(cores=8, mem_mib=8000)
+        executor._sl_pool = Pool(cores=8, mem_mb=8000)
 
         class Job:
             jobid = 3
@@ -322,7 +417,7 @@ class TestExecutorWiring:
         from snakemake_executor_plugin_shared_local.pool import Pool
 
         executor, _ = self._make_executor(tmp_path)
-        executor._sl_pool = Pool(cores=8, mem_mib=8000)
+        executor._sl_pool = Pool(cores=8, mem_mb=8000)
         executor._sl_cgroup_enabled = True
 
         class Job:

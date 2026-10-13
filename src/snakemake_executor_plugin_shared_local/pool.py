@@ -15,14 +15,28 @@ __email__ = "ymq@gzfezx.com"
 __license__ = "MIT"
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config import ConfigError
 
 # Fraction of detected resources reserved for the operating system, other users
 # and non-Snakemake work. Used only as a default; explicit settings win.
 DEFAULT_RESERVE_FRACTION = 0.10
+
+# The single name under which memory is arbitrated, on both sides of the pool:
+# ``Pool.as_dict()`` publishes it and ``lease.normalize_resources()`` produces it.
+# It is Snakemake's own resource name, deliberately: it is what jobs declare via
+# ``resources: mem_mb=...`` and what ``--default-resources mem_mb=...`` fills in.
+#
+# This constant exists because the two sides once disagreed (the pool published
+# ``mem_mib``, requests used ``mem_mb``). ``policy.fits()`` treats a dimension the
+# pool does not declare as *unconstrained*, so that mismatch silently disabled all
+# memory arbitration. Any new pool dimension must be spelled identically here, and
+# the test suite pins the invariant.
+MEMORY_DIMENSION = "mem_mb"
 
 
 def detect_cpu_count() -> int:
@@ -87,18 +101,62 @@ class Pool:
 
     cores: int
     # ``None`` means memory is not arbitrated at all (no pool memory known).
-    mem_mib: int | None
+    mem_mb: int | None
 
     def as_dict(self) -> dict[str, int]:
         data = {"cores": self.cores}
-        if self.mem_mib is not None:
-            data["mem_mib"] = self.mem_mib
+        if self.mem_mb is not None:
+            data[MEMORY_DIMENSION] = self.mem_mb
         return data
+
+
+# Spellings of the memory dimension accepted from the outside world. A pool
+# declaration written by an older plugin used ``mem_mib``; both must resolve to the
+# one dimension actually compared against job requests, or a pre-existing
+# ``pool.json`` would look like a conflict (or, worse, be ignored).
+_MEMORY_ALIASES = ("mem_mb", "mem_mib", "mem")
+
+
+def canonicalize_pool(pool: Mapping[str, Any]) -> dict[str, int]:
+    """Normalize a pool declaration to canonical dimension names.
+
+    Aliases of memory collapse onto :data:`MEMORY_DIMENSION`, preferring the
+    canonical spelling when several are present.
+
+    An unusable value (non-numeric, boolean, zero or negative) raises
+    :class:`ConfigError` rather than being dropped. Dropping is the dangerous
+    choice: :func:`policy.fits` treats a dimension absent from the pool as
+    *unconstrained*, so silently discarding ``cores`` would remove the CPU ceiling
+    altogether - the same class of bug as the memory-dimension mismatch this
+    module exists to prevent. A declaration nobody can interpret must fail loudly.
+    """
+    canonical: dict[str, int] = {}
+    for name, value in pool.items():
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            raise ConfigError(
+                f"Pool dimension {name!r} has unusable value {value!r}: expected a "
+                f"positive integer."
+            )
+        try:
+            amount = int(value)
+        except (TypeError, ValueError) as err:
+            raise ConfigError(
+                f"Pool dimension {name!r} has unusable value {value!r}: expected a "
+                f"positive integer."
+            ) from err
+        if amount < 1:
+            raise ConfigError(f"Pool dimension {name!r} must be >= 1, got {value!r}.")
+        dimension = MEMORY_DIMENSION if name in _MEMORY_ALIASES else name
+        if dimension in canonical and name != MEMORY_DIMENSION:
+            # The canonical spelling wins over any alias, whatever the dict order.
+            continue
+        canonical[dimension] = amount
+    return canonical
 
 
 def compute_pool(
     pool_cores: int | None = None,
-    pool_mem_mib: int | None = None,
+    pool_mem_mb: int | None = None,
     *,
     reserve_fraction: float = DEFAULT_RESERVE_FRACTION,
 ) -> Pool:
@@ -110,15 +168,15 @@ def compute_pool(
     else:
         cores = apply_reserve(detect_cpu_count(), reserve_fraction)
 
-    if pool_mem_mib is not None:
-        mem_mib: int | None = int(pool_mem_mib)
-        if mem_mib < 1:
-            raise ConfigError(f"pool_mem must be >= 1 MiB, got {mem_mib}.")
+    if pool_mem_mb is not None:
+        mem_mb: int | None = int(pool_mem_mb)
+        if mem_mb < 1:
+            raise ConfigError(f"pool_mem must be >= 1 MiB, got {mem_mb}.")
     else:
         try:
-            mem_mib = apply_reserve(detect_mem_total_mib(), reserve_fraction)
+            mem_mb = apply_reserve(detect_mem_total_mib(), reserve_fraction)
         except ConfigError:
             # Memory detection failing must not break CPU coordination.
-            mem_mib = None
+            mem_mb = None
 
-    return Pool(cores=cores, mem_mib=mem_mib)
+    return Pool(cores=cores, mem_mb=mem_mb)

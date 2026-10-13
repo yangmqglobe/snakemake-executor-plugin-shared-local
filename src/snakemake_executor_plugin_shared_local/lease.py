@@ -49,6 +49,7 @@ from typing import Any, Union
 from .config import ConfigError
 from .namespace import Namespace
 from .policy import Waiter, fits, should_yield
+from .pool import MEMORY_DIMENSION, canonicalize_pool
 
 SCHEMA_VERSION = 1
 
@@ -108,8 +109,13 @@ def normalize_resources(
     """Convert a Snakemake resource mapping into lease dimensions.
 
     ``threads`` becomes the ``cores`` dimension, matching the pool's core budget.
-    Derived/aliased entries (``mem_mib``, ``mem``) and internal scheduler keys are
-    dropped so a single request is never counted twice.
+    Derived/aliased entries (``mem_mb``/``mem_mib``/``mem``) and internal scheduler
+    keys are dropped so a single request is never counted twice.
+
+    Memory is emitted as :data:`MEMORY_DIMENSION`, the same name ``Pool.as_dict()``
+    publishes. Both sides must agree, because ``policy.fits()`` treats a dimension
+    absent from the pool as unconstrained - the mismatch that once silently
+    disabled memory arbitration entirely.
     """
     request: dict[str, int] = {"cores": max(1, int(threads))}
     for name, value in resources.items():
@@ -117,17 +123,17 @@ def normalize_resources(
             continue
         if name.endswith(DERIVED_SUFFIXES):
             continue
-        if name in ("mem", "mem_mb", "mem_mib") and not with_mem:
+        if name in (MEMORY_DIMENSION, "mem", "mem_mib") and not with_mem:
             continue
         if isinstance(value, bool):
             continue
         if isinstance(value, int):
             if value <= 0:
                 continue
-            dimension = "mem_mb" if name in ("mem_mb", "mem") else name
+            dimension = MEMORY_DIMENSION if name in (MEMORY_DIMENSION, "mem") else name
             request[dimension] = int(value)
         elif isinstance(value, str) and value.isdigit():
-            dimension = "mem_mb" if name in ("mem_mb", "mem") else name
+            dimension = MEMORY_DIMENSION if name in (MEMORY_DIMENSION, "mem") else name
             request[dimension] = int(value)
     return request
 
@@ -152,7 +158,10 @@ class LeaseManager:
         gc: bool = False,
     ) -> None:
         self.namespace = namespace
-        self.pool = {k: int(v) for k, v in pool.items()}
+        # Canonicalize on the way in so an alias spelling (a pool declaration
+        # written by an older plugin, or a hand-written ``mem_mib``) still lands on
+        # the dimension job requests are expressed in.
+        self.pool = canonicalize_pool(pool)
         self.instance_id = (
             instance_id
             or f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:4]}"
@@ -270,13 +279,30 @@ class LeaseManager:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, FILE_MODE)
         except FileExistsError:
             existing = _read_json(path)
-            if existing is not None and dict(existing.get("pool") or {}) != dict(
-                self.pool
-            ):
+            # Compare canonicalized declarations: a file written by an older plugin
+            # spells memory ``mem_mib``, which is the same pool as our ``mem_mb``.
+            # Comparing raw dicts would turn an upgrade into a spurious abort.
+            #
+            # A file that exists but carries no usable ``pool`` mapping must still
+            # count as a mismatch (yielding ``{}``), never as "nothing to compare":
+            # skipping the check would let each instance run with a pool the other
+            # never agreed to, which is exactly what this negotiation prevents. The
+            # same applies to a declaration we cannot interpret at all.
+            raw = existing.get("pool") if isinstance(existing, Mapping) else None
+            try:
+                on_disk = canonicalize_pool(raw) if isinstance(raw, Mapping) else {}
+            except ConfigError as err:
+                on_disk = {}
+                unreadable = str(err)
+            else:
+                unreadable = None
+            if existing is not None and on_disk != self.pool:
+                shown = dict(raw) if isinstance(raw, Mapping) else raw
                 message = (
                     f"Pool declaration mismatch in {path}: "
-                    f"on disk {existing.get('pool')} vs configured {dict(self.pool)}. "
-                    "All instances sharing a namespace must agree on the pool, "
+                    f"on disk {shown} vs configured {dict(self.pool)}. "
+                    + (f"{unreadable} " if unreadable else "")
+                    + "All instances sharing a namespace must agree on the pool, "
                     "otherwise the global limit is not enforced. Align "
                     "--shared-local-pool-cores/-mem, or use a separate namespace."
                 )

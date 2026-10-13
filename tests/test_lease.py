@@ -51,7 +51,7 @@ def make_namespace(
 def make_manager(ns: Namespace, pool=None, **kwargs) -> LeaseManager:
     kwargs.setdefault("instance_id", f"test-{os.getpid()}-{time.time_ns() % 100000}")
     kwargs.setdefault("poll_interval", 0.01)
-    return LeaseManager(ns, pool or {"cores": 4, "mem_mib": 8192}, **kwargs)
+    return LeaseManager(ns, pool or {"cores": 4, "mem_mb": 8192}, **kwargs)
 
 
 # --------------------------------------------------------------- normalization
@@ -152,11 +152,11 @@ class TestAdmission:
         ns = make_namespace(tmp_path)
         a = make_manager(ns, instance_id="a")
         b = make_manager(ns, instance_id="b")
-        a.acquire("a1", {"cores": 2, "mem_mib": 100})
-        b.acquire("b1", {"cores": 1, "mem_mib": 50})
+        a.acquire("a1", {"cores": 2, "mem_mb": 100})
+        b.acquire("b1", {"cores": 1, "mem_mb": 50})
         used, warnings = a.snapshot()
         assert used["cores"] == 3
-        assert used["mem_mib"] == 150
+        assert used["mem_mb"] == 150
         assert warnings == []
 
     def test_group_admission_is_atomic(self, tmp_path):
@@ -385,6 +385,60 @@ class TestPoolNegotiation:
         manager.negotiate_pool()
         mode = stat.S_IMODE(os.stat(ns.path / POOL_FILE).st_mode)
         assert mode == 0o644
+
+    def test_pool_file_without_a_pool_mapping_still_counts_as_a_mismatch(
+        self, tmp_path
+    ):
+        """A file that exists but declares nothing must not be silently ignored.
+
+        Skipping the comparison would let every instance run with a pool the other
+        never agreed to - the exact failure this negotiation exists to prevent.
+        """
+        ns = make_namespace(tmp_path)
+        (ns.path / POOL_FILE).write_text("{}")
+        manager = make_manager(ns, pool={"cores": 8}, instance_id="second")
+        with pytest.raises(LeaseError, match="mismatch"):
+            manager.negotiate_pool()
+
+    def test_legacy_mem_mib_pool_is_not_a_mismatch(self, tmp_path):
+        """An upgrade must not turn a healthy shared namespace into an abort."""
+        ns = make_namespace(tmp_path)
+        (ns.path / POOL_FILE).write_text(
+            json.dumps(
+                {
+                    "version": SCHEMA_VERSION,
+                    "host": "otherhost",
+                    "pool": {"cores": 8, "mem_mib": 8192},
+                    "created_by": 0,
+                    "created_at": 0,
+                }
+            )
+        )
+        manager = make_manager(ns, pool={"cores": 8, "mem_mb": 8192}, instance_id="me")
+        manager.negotiate_pool()
+        assert manager.pool == {"cores": 8, "mem_mb": 8192}
+
+    def test_legacy_mem_mib_pool_with_different_cores_is_a_mismatch(self, tmp_path):
+        """Canonicalization must not mask a genuine disagreement."""
+        ns = make_namespace(tmp_path)
+        (ns.path / POOL_FILE).write_text(
+            json.dumps(
+                {"version": SCHEMA_VERSION, "pool": {"cores": 4, "mem_mib": 8192}}
+            )
+        )
+        manager = make_manager(ns, pool={"cores": 8, "mem_mb": 8192}, instance_id="me")
+        with pytest.raises(LeaseError, match="mismatch"):
+            manager.negotiate_pool()
+
+    def test_uninterpretable_pool_file_is_a_mismatch_not_a_crash(self, tmp_path):
+        """A declaration we cannot read must abort cleanly, not raise KeyError."""
+        ns = make_namespace(tmp_path)
+        (ns.path / POOL_FILE).write_text(
+            json.dumps({"version": SCHEMA_VERSION, "pool": {"cores": "lots"}})
+        )
+        manager = make_manager(ns, pool={"cores": 8}, instance_id="me")
+        with pytest.raises(LeaseError, match="mismatch"):
+            manager.negotiate_pool()
 
 
 # ------------------------------------------------------------- instance claims

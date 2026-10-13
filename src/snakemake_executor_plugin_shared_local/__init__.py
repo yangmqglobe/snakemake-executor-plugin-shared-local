@@ -48,7 +48,7 @@ from .config import AUTO, ConfigError, resolve_settings
 from .lease import AdmissionImpossible, LeaseError, LeaseManager, normalize_resources
 from .namespace import resolve_namespace
 from .policy import probe_priority
-from .pool import compute_pool
+from .pool import MEMORY_DIMENSION, compute_pool
 
 # Required by the plugin registry: this plugin executes locally.
 common_settings = CommonSettings(
@@ -75,11 +75,18 @@ class ExecutorSettings(ExecutorSettingsBase):
     strings: ``argparse_dataclass`` renders ``bool`` defaults as inverted
     ``--no-<flag>`` options, which also loses the plugin's CLI prefix (verified),
     while ``Literal`` yields a prefixed, choice-checked ``--shared-local-<name>``.
+
+    Every field also carries ``"env_var": True``. That flag is what makes Snakemake
+    pass ``env_var=<SNAKEMAKE_SHARED_LOCAL_*>`` through to ``configargparse``: the
+    CLI generator only forwards it when the metadata opts in, so without it the
+    documented environment variables are silently inert. ``configargparse`` then
+    applies the precedence CLI > environment > config file > default.
     """
 
     namespace: Literal["auto", "user", "group", "system"] = field(
         default=AUTO,
         metadata={
+            "env_var": True,
             "help": (
                 "Coordination scope. 'user' (default) shares resources between this "
                 "user's instances only, 'group' between instances of users sharing the "
@@ -91,6 +98,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     dir: Optional[str] = field(
         default=None,
         metadata={
+            "env_var": True,
             "help": (
                 "Directory holding lease files. Defaults to a scope-specific "
                 "subdirectory of /dev/shm/snakemake-shared-local."
@@ -100,6 +108,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     pool_cores: Optional[int] = field(
         default=None,
         metadata={
+            "env_var": True,
             "help": (
                 "Total CPU cores shared by all coordinated instances. Defaults to "
                 "detected CPUs minus a 10% reserve. This is the hard ceiling; --cores "
@@ -110,15 +119,19 @@ class ExecutorSettings(ExecutorSettingsBase):
     pool_mem: Optional[str] = field(
         default=None,
         metadata={
+            "env_var": True,
             "help": (
                 "Total memory shared by all coordinated instances, e.g. '450G' or "
-                "'400000' (MiB). Defaults to detected memory minus a 10% reserve."
+                "'400000'. Suffixes are binary: '450G' means 450 GiB. The value is "
+                "compared directly against jobs' mem_mb. Defaults to detected memory "
+                "minus a 10% reserve."
             ),
         },
     )
     pool_conflict: Literal["auto", "error", "warn"] = field(
         default=AUTO,
         metadata={
+            "env_var": True,
             "help": (
                 "What to do when instances sharing a namespace declare different "
                 "pools. 'error' (default) refuses to run, because a mismatch silently "
@@ -128,11 +141,15 @@ class ExecutorSettings(ExecutorSettingsBase):
     )
     instance_weight: Optional[float] = field(
         default=None,
-        metadata={"help": "Relative scheduling weight of this instance versus others."},
+        metadata={
+            "env_var": True,
+            "help": "Relative scheduling weight of this instance versus others.",
+        },
     )
     aging_seconds: Optional[int] = field(
         default=None,
         metadata={
+            "env_var": True,
             "help": (
                 "Time constant for priority aging, which stops low-priority jobs from "
                 "starving. 0 disables aging."
@@ -141,11 +158,15 @@ class ExecutorSettings(ExecutorSettingsBase):
     )
     aging_step: Optional[int] = field(
         default=None,
-        metadata={"help": "Priority bonus granted per aging_seconds of waiting."},
+        metadata={
+            "env_var": True,
+            "help": "Priority bonus granted per aging_seconds of waiting.",
+        },
     )
     admit_timeout: Optional[int] = field(
         default=None,
         metadata={
+            "env_var": True,
             "help": (
                 "Seconds to wait for resources before failing. 0 (default) waits "
                 "indefinitely, which is usually right for long jobs."
@@ -154,11 +175,15 @@ class ExecutorSettings(ExecutorSettingsBase):
     )
     poll_interval: Optional[float] = field(
         default=None,
-        metadata={"help": "Seconds between admission attempts while waiting."},
+        metadata={
+            "env_var": True,
+            "help": "Seconds between admission attempts while waiting.",
+        },
     )
     numa_bind: TriState = field(
         default=AUTO,
         metadata={
+            "env_var": True,
             "help": (
                 "Pin each job to the NUMA node with the most free capacity. 'auto' "
                 "(default) enables it on multi-node machines, 'on' forces it, 'off' "
@@ -169,6 +194,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     cgroup: TriState = field(
         default=AUTO,
         metadata={
+            "env_var": True,
             "help": (
                 "Wrap jobs in a cgroup v2 scope so the kernel enforces CPU and memory "
                 "limits. 'auto' (default) applies the plugin default, which is OFF: "
@@ -182,6 +208,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     require_mem: TriState = field(
         default=AUTO,
         metadata={
+            "env_var": True,
             "help": (
                 "Fail when a job declares no mem_mb instead of skipping memory "
                 "arbitration for it. Consider --default-resources mem_mb=... first."
@@ -191,6 +218,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     record_rule: TriState = field(
         default=AUTO,
         metadata={
+            "env_var": True,
             "help": (
                 "Record rule names in lease files. 'auto' (default) records them "
                 "except in the 'system' scope, where other users could read them."
@@ -199,15 +227,22 @@ class ExecutorSettings(ExecutorSettingsBase):
     )
     gc_report: TriState = field(
         default=AUTO,
-        metadata={"help": "Report stale lease files that could not be removed."},
+        metadata={
+            "env_var": True,
+            "help": "Report stale lease files that could not be removed.",
+        },
     )
     verbose_leases: TriState = field(
         default=AUTO,
-        metadata={"help": "Log every admission, wait and collection decision."},
+        metadata={
+            "env_var": True,
+            "help": "Log every admission, wait and collection decision.",
+        },
     )
     config: Optional[str] = field(
         default=None,
         metadata={
+            "env_var": True,
             "help": (
                 "Path to a JSON settings file "
                 "(default ~/.config/snakemake/shared-local/config.json)."
@@ -274,7 +309,7 @@ class _SharedLocalExecutor:
 
         pool = compute_pool(
             self._sl_settings.pool_cores,
-            self._sl_settings.pool_mem_mib,
+            self._sl_settings.pool_mem_mb,
         )
         self._sl_pool = pool
 
@@ -314,7 +349,7 @@ class _SharedLocalExecutor:
         self.logger.info(
             f"shared-local: scope '{namespace.mode}' at {namespace.path}; "
             f"pool cores={pool.cores}"
-            + (f", mem={pool.mem_mib} MiB" if pool.mem_mib is not None else "")
+            + (f", mem={pool.mem_mb} MiB" if pool.mem_mb is not None else "")
             + f"; NUMA {'on' if self._sl_numa_enabled else 'off'}"
             + f"; cgroup {'on' if self._sl_cgroup_enabled else 'off'}"
         )
@@ -362,13 +397,13 @@ class _SharedLocalExecutor:
         # single-core job, rather than aborting the whole workflow.
         with contextlib.suppress(Exception):
             threads = int(job.threads)
-        with_mem = self._sl_pool.mem_mib is not None
+        with_mem = self._sl_pool.mem_mb is not None
         try:
             resources = dict(job.resources)
         except Exception:  # pragma: no cover
             resources = {}
         request = normalize_resources(resources, threads=threads, with_mem=with_mem)
-        if with_mem and "mem_mb" not in request:
+        if with_mem and MEMORY_DIMENSION not in request:
             self._warn_missing_mem(job)
         return request
 

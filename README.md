@@ -185,6 +185,16 @@ $ snakemake -s Snakefile --executor shared-local -c 16 --default-resources mem_m
 
 Set `--shared-local-require-mem` to turn that warning into a hard error.
 
+Memory is enforced in the same way cores are: a job asking for more `mem_mb` than
+the pool can ever provide fails immediately, with a message naming
+`--shared-local-pool-mem`. The accounting uses one shared dimension, `mem_mb`, on
+both sides — the same name Snakemake gives the resource — so a job's declaration is
+compared directly against the pool ceiling.
+
+`--shared-local-pool-mem` accepts a plain number (MiB) or a suffix, and **suffixes
+are binary**: `450G` means 450 GiB, `400000` means 400000 MiB. The value is compared
+directly against jobs' `mem_mb`, so no rescaling happens in between.
+
 Be aware that Snakemake clamps `mem_mb` against `--resources mem_mb=...`, so if you
 use `--resources mem_mb`, keep it consistent with `--shared-local-pool-mem`.
 
@@ -265,7 +275,8 @@ Settings may also come from a JSON config file
 }
 ```
 
-Precedence is: explicit CLI flag, then config file, then auto-detection.
+Precedence is: explicit CLI flag, then environment variable
+(`SNAKEMAKE_SHARED_LOCAL_*`), then config file, then auto-detection.
 
 ---
 
@@ -276,7 +287,7 @@ Precedence is: explicit CLI flag, then config file, then auto-detection.
 | `--shared-local-namespace` | `auto` → `user` | `user`, `group` or `system` scope |
 | `--shared-local-dir` | scope-dependent | Override the lease directory |
 | `--shared-local-pool-cores` | detected − 10 % | Global CPU ceiling |
-| `--shared-local-pool-mem` | detected − 10 % | Global memory ceiling (`450G`, `400000`) |
+| `--shared-local-pool-mem` | detected − 10 % | Global memory ceiling (`450G`, `400000`); suffixes are binary |
 | `--shared-local-pool-conflict` | `error` | `error` or `warn` on pool mismatch |
 | `--shared-local-instance-weight` | `1.0` | This instance's share relative to others |
 | `--shared-local-aging-seconds` | `60` | Starvation-avoidance time constant (`0` off) |
@@ -291,7 +302,8 @@ Precedence is: explicit CLI flag, then config file, then auto-detection.
 | `--shared-local-verbose-leases` | `auto` | Log every admission/wait/collection decision |
 | `--shared-local-config` | `~/.config/snakemake/shared-local/config.json` | JSON settings file |
 
-Every setting also has a `SNAKEMAKE_SHARED_LOCAL_*` environment variable.
+Every setting also has a `SNAKEMAKE_SHARED_LOCAL_*` environment variable, taking
+precedence over the config file and being overridden by an explicit CLI flag.
 
 ---
 

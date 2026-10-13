@@ -379,8 +379,8 @@ class TestCgroupEdgeCases:
 
 class TestPoolSizingEdgeCases:
     def test_pool_mem_uses_explicit_value_only(self):
-        p = pool.compute_pool(pool_cores=4, pool_mem_mib=1234)
-        assert p.mem_mib == 1234
+        p = pool.compute_pool(pool_cores=4, pool_mem_mb=1234)
+        assert p.mem_mb == 1234
 
     def test_reserve_rounds_down(self):
         # 10 % of 15 is 1.5; the reserve must not round up and steal a core.

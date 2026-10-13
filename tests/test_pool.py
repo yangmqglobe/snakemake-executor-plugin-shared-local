@@ -62,28 +62,28 @@ def test_apply_reserve_rejects_nonpositive_total():
 
 
 def test_compute_pool_uses_explicit_values():
-    pool = compute_pool(pool_cores=32, pool_mem_mib=4096)
+    pool = compute_pool(pool_cores=32, pool_mem_mb=4096)
     assert pool.cores == 32
-    assert pool.mem_mib == 4096
+    assert pool.mem_mb == 4096
 
 
 def test_compute_pool_detects_when_unspecified():
     pool = compute_pool()
     assert pool.cores >= 1
-    # Memory detection should succeed on Linux; if not, mem_mib may be None.
-    assert pool.mem_mib is None or pool.mem_mib >= 1
+    # Memory detection should succeed on Linux; if not, mem_mb may be None.
+    assert pool.mem_mb is None or pool.mem_mb >= 1
 
 
 def test_compute_pool_rejects_invalid_explicit_values():
     with pytest.raises(ConfigError, match="pool_cores"):
         compute_pool(pool_cores=0)
     with pytest.raises(ConfigError, match="pool_mem"):
-        compute_pool(pool_mem_mib=0)
+        compute_pool(pool_mem_mb=0)
 
 
 def test_pool_as_dict_includes_only_known_memory():
-    assert Pool(cores=4, mem_mib=None).as_dict() == {"cores": 4}
-    assert Pool(cores=4, mem_mib=100).as_dict() == {"cores": 4, "mem_mib": 100}
+    assert Pool(cores=4, mem_mb=None).as_dict() == {"cores": 4}
+    assert Pool(cores=4, mem_mb=100).as_dict() == {"cores": 4, "mem_mb": 100}
 
 
 def test_compute_pool_survives_unreadable_meminfo(monkeypatch):
@@ -95,5 +95,5 @@ def test_compute_pool_survives_unreadable_meminfo(monkeypatch):
 
     monkeypatch.setattr(pool_module, "detect_mem_total_mib", boom)
     pool = pool_module.compute_pool()
-    assert pool.mem_mib is None
+    assert pool.mem_mb is None
     assert pool.cores >= 1

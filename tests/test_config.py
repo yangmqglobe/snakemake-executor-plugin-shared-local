@@ -89,7 +89,7 @@ def test_resolve_defaults_without_config(tmp_path: Path):
     resolved = resolve_settings(settings)
     assert resolved.namespace == "user"
     assert resolved.pool_cores is None
-    assert resolved.pool_mem_mib is None
+    assert resolved.pool_mem_mb is None
     assert resolved.pool_conflict == "error"
     assert resolved.numa_bind is None  # auto: enable on multi-node machines
     assert resolved.cgroup is False  # auto: plugin default is OFF
@@ -155,7 +155,7 @@ def test_config_file_supplies_values(tmp_path: Path):
     )
     resolved = resolve_settings(FakeSettings(config=str(config)))
     assert resolved.pool_cores == 48
-    assert resolved.pool_mem_mib == 300 * 1024
+    assert resolved.pool_mem_mb == 300 * 1024
     assert resolved.namespace == "group"
 
 
@@ -220,6 +220,26 @@ def test_unknown_keys_warn_but_do_not_fail(tmp_path: Path):
     resolved = resolve_settings(FakeSettings(config=str(config)))
     assert resolved.pool_cores == 4
     assert any("typo_key" in warning for warning in resolved.warnings)
+
+
+def test_require_mem_is_settable_from_the_config_file(tmp_path: Path):
+    """Regression: ``require_mem`` was absent from VALID_KEYS, so a config file
+    setting it was reported as an unknown key and silently ignored."""
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"require_mem": "on"}))
+    resolved = resolve_settings(FakeSettings(config=str(config)))
+    assert resolved.require_mem is True
+    assert not any("require_mem" in warning for warning in resolved.warnings)
+
+
+def test_every_tri_state_setting_is_a_valid_config_key():
+    """A tri-state setting that is not in VALID_KEYS cannot be configured."""
+    from snakemake_executor_plugin_shared_local.config import (
+        TRI_STATE_KEYS,
+        VALID_KEYS,
+    )
+
+    assert set(TRI_STATE_KEYS) <= VALID_KEYS
 
 
 def test_config_path_expands_user_and_vars(tmp_path: Path, monkeypatch):

@@ -161,7 +161,7 @@ def build(tmp_path: Path, pool_cores=4, **overrides) -> Harness:
     ns.path.mkdir(parents=True, exist_ok=True)
     os.chmod(ns.path, 0o700)
     executor._sl_namespace = ns
-    executor._sl_pool = Pool(cores=pool_cores, mem_mib=overrides.get("_mem", 8192))
+    executor._sl_pool = Pool(cores=pool_cores, mem_mb=overrides.get("_mem", 8192))
     executor._sl_leases = LeaseManager(
         ns,
         executor._sl_pool.as_dict(),

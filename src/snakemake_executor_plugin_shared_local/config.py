@@ -37,12 +37,15 @@ NAMESPACE_SYSTEM = "system"
 NAMESPACES = (NAMESPACE_USER, NAMESPACE_GROUP, NAMESPACE_SYSTEM)
 
 # Names of the tri-state settings that resolve through AUTO_ON_OFF.
+# ``require_mem`` belongs here: without it the key is not in VALID_KEYS, so a
+# config file setting it would be reported as unknown and silently ignored.
 TRI_STATE_KEYS = (
     "numa_bind",
     "cgroup",
     "record_rule",
     "verbose_leases",
     "gc_report",
+    "require_mem",
 )
 
 TRUEISH = {"on", "true", "yes", "1", "enabled"}
@@ -228,7 +231,7 @@ class ResolvedSettings:
     namespace: str
     dir: str | None
     pool_cores: int | None
-    pool_mem_mib: int | None
+    pool_mem_mb: int | None
     pool_conflict: str
     instance_weight: float
     aging_seconds: int
@@ -301,7 +304,7 @@ def resolve_settings(settings: Any) -> ResolvedSettings:
         namespace=namespace,
         dir=pick("dir"),
         pool_cores=_coerce_int(pick("pool_cores"), key="pool_cores", minimum=1),
-        pool_mem_mib=parse_size_to_mib(pick("pool_mem"), key="pool_mem"),
+        pool_mem_mb=parse_size_to_mib(pick("pool_mem"), key="pool_mem"),
         pool_conflict=pool_conflict,
         instance_weight=_coerce_float(pick("instance_weight"), key="instance_weight")
         or 1.0,
