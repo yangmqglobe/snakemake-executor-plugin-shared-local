@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 by [Release Please](https://github.com/googleapis/release-please) from
 conventional commits.
 
+## 0.1.0 (2026-10-13)
+
+
+### Features
+
+* coordinate local Snakemake instances through a shared resource pool ([b174d29](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/b174d29297ad5342b821a17ac7788e6898966c81))
+
+
+### Bug Fixes
+
+* arbitrate memory through one shared dimension and honor env vars ([ed11884](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/ed11884df43e328407dd11843ab652960cb9aa2d))
+* make cgroup enforcement actually default to off ([47d4155](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/47d4155331b0a98cb7e26609f62b7555b29b08fb))
+
+
+### Documentation
+
+* correct the editable-install caveat to match measured behaviour ([2e18274](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/2e1827471c73a0b3956020af445115dd29c2a378))
+* fix a typo in the editable-install note ([14f0d04](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/14f0d04d1a916e1b7eef602fcd0394fd2d34e545))
+
 ## [Unreleased]
 
 ### Fixed
