@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 by [Release Please](https://github.com/googleapis/release-please) from
 conventional commits.
 
+## [0.1.1](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.0...v0.1.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* arbitrate memory through one shared dimension and honor env vars ([ed11884](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/ed11884df43e328407dd11843ab652960cb9aa2d))
+
 ## [0.1.0]
 
 ### Added
