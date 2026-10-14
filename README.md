@@ -208,6 +208,12 @@ default; `on` forces, `off` disables). The binding uses `set_mempolicy(MPOL_BIND
 and `sched_setaffinity` through `ctypes`, so `numactl` is **not** required, and it
 is inherited by job subprocesses.
 
+Within the chosen node the CPUs are handed out round-robin, so concurrent jobs
+spread across the node instead of stacking on its lowest-numbered core. Placement
+also subtracts the memory already committed to running jobs on each node, and a
+worker thread's binding is reset when its job finishes rather than leaking into
+the next one.
+
 A job whose memory requirement exceeds every single node runs unbound with a
 warning rather than failing. On a single-node machine the feature disables itself.
 

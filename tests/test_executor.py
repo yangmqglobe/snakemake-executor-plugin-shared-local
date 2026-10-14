@@ -148,6 +148,9 @@ def build(tmp_path: Path, pool_cores=4, **overrides) -> Harness:
     executor._sl_launcher_seq = 0
     executor._sl_settings = resolve_settings(settings)
     executor._sl_numa_enabled = False
+    executor._sl_numa_used = {}
+    executor._sl_numa_offset = 0
+    executor._sl_topology = None
     executor._sl_cgroup_enabled = False
 
     ns = Namespace(
@@ -528,6 +531,140 @@ class TestNumaApplication:
         executor._sl_topology = numa_module.detect_topology()
         executor._sl_apply_numa({"cores": 1})
         assert "without binding" in executor.logger.text()
+
+    def test_placement_accounts_for_already_running_jobs(self, tmp_path, monkeypatch):
+        """`select_node`'s `used_per_node` must actually be passed.
+
+        It never was, so every job independently picked the same node, and the
+        per-node free-memory snapshot (taken once at startup) never changed.
+        """
+        executor = build(tmp_path, pool_cores=4)
+        executor._sl_numa_enabled = True
+        from snakemake_executor_plugin_shared_local import numa as numa_module
+
+        seen = {}
+
+        def spy(topology, *, cores, mem_mib, used_per_node=None):
+            seen["used_per_node"] = used_per_node
+            return topology.nodes[0]
+
+        monkeypatch.setattr(numa_module, "select_node", spy)
+        monkeypatch.setattr(
+            numa_module,
+            "bind_current_thread",
+            lambda *a, **k: numa_module.Binding(applied=True, node=0),
+        )
+        executor._sl_topology = numa_module.NumaTopology(nodes=[node0()])
+
+        executor._sl_apply_numa({"cores": 1, "mem_mb": 100})
+        assert seen["used_per_node"] is not None, (
+            "used_per_node must be passed so placement can avoid a busy node"
+        )
+
+    def test_offset_advances_so_jobs_do_not_share_a_cpu(self, tmp_path, monkeypatch):
+        """Consecutive placements must request different CPU offsets."""
+        executor = build(tmp_path, pool_cores=4)
+        executor._sl_numa_enabled = True
+        from snakemake_executor_plugin_shared_local import numa as numa_module
+
+        offsets = []
+
+        def spy(topology, *, cores, mem_mib, used_per_node=None):
+            return topology.nodes[0]
+
+        def spy_bind(node, *, cores, offset=0, logger=None):
+            offsets.append(offset)
+            return numa_module.Binding(applied=True, node=node.index)
+
+        monkeypatch.setattr(numa_module, "select_node", spy)
+        monkeypatch.setattr(numa_module, "bind_current_thread", spy_bind)
+        executor._sl_topology = numa_module.NumaTopology(nodes=[node0()])
+
+        for _ in range(4):
+            executor._sl_apply_numa({"cores": 1})
+
+        assert len(set(offsets)) == len(offsets), (
+            f"every job asked for the same CPU offset: {offsets}"
+        )
+
+    def test_affinity_is_reset_after_a_job(self, tmp_path, monkeypatch):
+        """Leaked affinity must not follow a worker thread into its next job."""
+        executor = build(tmp_path, pool_cores=4)
+        executor._sl_numa_enabled = True
+        from snakemake_executor_plugin_shared_local import numa as numa_module
+
+        calls = []
+        monkeypatch.setattr(
+            numa_module, "reset_current_thread", lambda: calls.append("reset")
+        )
+        # Stub placement so this test measures only the reset, not the binding.
+        monkeypatch.setattr(
+            numa_module,
+            "select_node",
+            lambda topology, *, cores, mem_mib, used_per_node=None: None,
+        )
+        executor.cached_or_run(FakeJob(), lambda *a: "ran")
+        assert calls == ["reset"], (
+            "cached_or_run must reset NUMA affinity in its finally block"
+        )
+
+    def test_affinity_is_reset_even_when_the_job_raises(self, tmp_path, monkeypatch):
+        executor = build(tmp_path, pool_cores=4)
+        executor._sl_numa_enabled = True
+        from snakemake_executor_plugin_shared_local import numa as numa_module
+
+        calls = []
+        monkeypatch.setattr(
+            numa_module, "reset_current_thread", lambda: calls.append("reset")
+        )
+        monkeypatch.setattr(
+            numa_module,
+            "select_node",
+            lambda topology, *, cores, mem_mib, used_per_node=None: None,
+        )
+
+        def boom(*a):
+            raise RuntimeError("job failed")
+
+        with pytest.raises(RuntimeError):
+            executor.cached_or_run(FakeJob(), boom)
+        assert calls == ["reset"], "a failed job must still release its binding"
+
+    def test_node_reservation_is_released_after_a_job(self, tmp_path, monkeypatch):
+        """Per-node accounting must not leak, or a node looks permanently busy."""
+        executor = build(tmp_path, pool_cores=4)
+        executor._sl_numa_enabled = True
+        from snakemake_executor_plugin_shared_local import numa as numa_module
+
+        monkeypatch.setattr(
+            numa_module,
+            "select_node",
+            lambda topology, *, cores, mem_mib, used_per_node=None: topology.nodes[0],
+        )
+        monkeypatch.setattr(
+            numa_module,
+            "bind_current_thread",
+            lambda *a, **k: numa_module.Binding(applied=True, node=0),
+        )
+        monkeypatch.setattr(numa_module, "reset_current_thread", lambda: None)
+        executor._sl_topology = numa_module.NumaTopology(nodes=[node0()])
+
+        job = FakeJob(threads=1, resources={"mem_mb": 2000})
+        executor.cached_or_run(job, lambda *a: "ran")
+        assert executor._sl_numa_used == {}, (
+            f"node reservation leaked: {executor._sl_numa_used}"
+        )
+
+
+def node0():
+    from snakemake_executor_plugin_shared_local.numa import NumaNode
+
+    return NumaNode(
+        index=0,
+        cpus=[0, 2, 4, 6],
+        mem_total_mib=100_000,
+        mem_free_mib=90_000,
+    )
 
 
 class TestConfigIntegration:

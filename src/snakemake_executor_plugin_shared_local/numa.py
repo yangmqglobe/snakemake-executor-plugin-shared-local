@@ -236,19 +236,41 @@ def select_node(
     return candidates[0][1]
 
 
+def select_cpus(node: NumaNode, *, cores: int, offset: int = 0) -> list[int]:
+    """Return the CPUs of ``node`` to bind a job requesting ``cores`` cores to.
+
+    ``offset`` rotates the window through the node so that consecutive jobs do not
+    pile onto the same CPUs. This matters more than it looks: taking
+    ``node.cpus[:cores]`` every time meant every 1-core job of every instance was
+    bound to the node's single lowest-numbered CPU. On a real 128-CPU host that put
+    74 concurrent jobs on CPU 0 and left the machine at 12.8% utilisation.
+
+    The window wraps within the node, so a job never straddles two nodes, and it
+    never repeats a CPU unless the node has fewer CPUs than the request.
+    """
+    cpus = node.cpus
+    if not cpus:
+        return []
+    wanted = min(max(1, int(cores)), len(cpus))
+    start = int(offset) % len(cpus)
+    return [cpus[(start + i) % len(cpus)] for i in range(wanted)]
+
+
 def bind_current_thread(
     node: NumaNode,
     *,
     cores: int,
+    offset: int = 0,
     logger: logging.Logger | None = None,
 ) -> Binding:
     """Bind the calling thread (and thus its children) to ``node``.
 
     CPU affinity is restricted to ``cores`` CPUs so a job with ``threads: 4`` does
     not get scheduled across all 64 CPUs of the node, which would hurt locality
-    for its own data.
+    for its own data. ``offset`` chooses *which* CPUs within the node, so that
+    concurrent jobs share the node without stacking onto one core.
     """
-    cpus = node.cpus[: max(1, cores)]
+    cpus = select_cpus(node, cores=cores, offset=offset)
     memory_ok = _BINDER.bind_memory([node.index])
     cpus_ok = _BINDER.bind_cpus(cpus)
 
