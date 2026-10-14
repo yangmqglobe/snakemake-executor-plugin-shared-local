@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+import snakemake_executor_plugin_shared_local.lease as lease_module
 from snakemake_executor_plugin_shared_local.lease import (
     INSTANCE_SUFFIX,
     LEASE_SUFFIX,
@@ -27,6 +28,7 @@ from snakemake_executor_plugin_shared_local.lease import (
     _sanitize,
     _try_lock_read,
     _unlock_close,
+    _Unreadable,
     normalize_resources,
 )
 from snakemake_executor_plugin_shared_local.namespace import Namespace
@@ -317,6 +319,99 @@ class TestLowLevelHelpers:
             # Locked but unreadable content must not crash the workflow.
             assert result is not None
         finally:
+            _unlock_close(fd)
+
+    def test_read_lease_returns_none_for_missing_file(self, tmp_path):
+        """A lease that is not there describes nobody: it must count as zero.
+
+        ``_try_lock_read`` returns ``None`` both when the lock is held and when the
+        file cannot be opened, so ``_read_lease`` has to tell the two apart. A
+        vanished file used to fall through to the read, raise ``FileNotFoundError``
+        and get reported as ``(unparseable)`` -- which blames permissions and, in a
+        shared namespace, aborts the whole workflow.
+        """
+        result = _read_lease(tmp_path / "never-existed.lease")
+        assert result is None, f"a missing lease must count as zero, got {result!r}"
+
+    def test_read_lease_returns_none_when_file_vanishes_after_listing(self, tmp_path):
+        """The release() race: listed by _scan(), unlinked before the open()."""
+        path = tmp_path / "released.lease"
+        path.write_text(json.dumps({"version": SCHEMA_VERSION, "resources": {}}))
+        # What _scan() saw...
+        listed = [p for p in tmp_path.iterdir() if p.name == path.name]
+        assert listed
+        # ...then release() unlinks it before _read_lease() opens it.
+        path.unlink()
+        assert _read_lease(listed[0]) is None
+
+    def test_vanished_lease_does_not_look_like_a_permission_problem(self, tmp_path):
+        """The message must not blame permissions for a file that is simply gone."""
+        result = _read_lease(tmp_path / "gone.lease")
+        assert not isinstance(result, _Unreadable), (
+            "a missing file is not an unreadable file"
+        )
+
+    def test_snapshot_treats_a_vanished_lease_as_zero(self, tmp_path, monkeypatch):
+        """A phantom name from listdir() must not produce a warning.
+
+        Deterministic model of the race: ``os.listdir`` reports a lease that has
+        already been unlinked.
+        """
+        ns = make_ns(tmp_path)
+        m = manager(ns, instance_id="scanner")
+        phantom = "somebody-1-abcdef.lease"
+
+        real_listdir = os.listdir
+
+        def listdir_with_ghost(path):
+            names = real_listdir(path)
+            if str(path) == str(ns.path):
+                names = [*names, phantom]
+            return names
+
+        monkeypatch.setattr(lease_module.os, "listdir", listdir_with_ghost)
+
+        used, warnings = m.snapshot()
+        assert used == {}
+        assert warnings == [], f"vanished lease must not warn, got {warnings}"
+
+    def test_shared_namespace_does_not_abort_on_a_vanished_lease(
+        self, tmp_path, monkeypatch
+    ):
+        """The load-dependent WorkflowError this bug caused in system scope."""
+        ns = make_ns(tmp_path, mode="system")
+        m = manager(ns, pool={"cores": 4}, instance_id="me")
+        phantom = "somebody-1-abcdef.lease"
+
+        real_listdir = os.listdir
+
+        def listdir_with_ghost(path):
+            names = real_listdir(path)
+            if str(path) == str(ns.path):
+                names = [*names, phantom]
+            return names
+
+        monkeypatch.setattr(lease_module.os, "listdir", listdir_with_ghost)
+
+        handle = m.acquire("j", {"cores": 1})
+        m.release("j")
+        assert handle is not None
+
+    def test_genuine_permission_error_is_still_reported(self, tmp_path):
+        """Real invisibility must keep failing loudly: that is the safety net."""
+        if os.getuid() == 0:  # pragma: no cover - root can always read
+            pytest.skip("root bypasses file permissions")
+        path = tmp_path / "unreadable.lease"
+        path.write_text(json.dumps({"version": SCHEMA_VERSION, "resources": {}}))
+        fd = os.open(path, os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.chmod(path, 0o000)
+        try:
+            result = _read_lease(path)
+            assert isinstance(result, _Unreadable)
+            assert "owner uid" in result.message
+        finally:
+            os.chmod(path, 0o644)
             _unlock_close(fd)
 
 

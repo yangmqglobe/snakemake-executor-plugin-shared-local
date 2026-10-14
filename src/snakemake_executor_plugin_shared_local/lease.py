@@ -725,7 +725,8 @@ def _read_lease(path: Path) -> Union[LeaseEntry, "_Unreadable"] | None:
     Returns
     -------
     ``None``
-        Nobody holds the lock: the entry is stale and consumes no resources.
+        The entry consumes no resources: either nobody holds the lock (a stale
+        file), or the file no longer exists at all.
     ``_Unreadable``
         The lock is held by a live owner but we may not read the content, so the
         usage is unknown.
@@ -741,6 +742,15 @@ def _read_lease(path: Path) -> Union[LeaseEntry, "_Unreadable"] | None:
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
+    except FileNotFoundError:
+        # The file vanished between _scan()'s listdir() and this open, which is the
+        # normal consequence of another thread's release() unlinking it. No entry
+        # means no resources, so this must be treated exactly like a stale file --
+        # never reported as unreadable. Note this is *not* a rare condition: the run
+        # that exposed it emitted 39 such warnings, all for files that had already
+        # been released successfully. Reporting them as unparseable both blamed
+        # permissions and, in a shared namespace, aborted the workflow at random.
+        return None
     except PermissionError:
         return _Unreadable(
             f"{path.name} (owner uid {_uid_of(path)}, mode {_mode_of(path)})"
