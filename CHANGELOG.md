@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 by [Release Please](https://github.com/googleapis/release-please) from
 conventional commits.
 
+## [0.1.2](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.1...v0.1.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* spread NUMA-bound jobs across a node instead of one core ([#7](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/7)) ([20aedb3](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/20aedb3064c39636d7b9768432798fece9893488)), closes [#5](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/5)
+* stop reporting released leases as unparseable ([#6](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/6)) ([cd45a46](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/cd45a46574a0c72659c2680b6408aab63786ae3e)), closes [#4](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/4)
+
 ## [0.1.1](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.0...v0.1.1) (2026-10-13)
 
 
