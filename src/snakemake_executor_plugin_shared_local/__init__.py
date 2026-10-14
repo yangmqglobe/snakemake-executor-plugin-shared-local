@@ -341,6 +341,12 @@ class _SharedLocalExecutor:
 
         self._sl_topology = numa_mod.detect_topology()
         self._sl_numa_enabled = self._resolve_numa()
+        # Per-node in-flight memory, so placement can avoid a node it just filled.
+        # The topology's own free-memory figures are read once at startup and never
+        # refreshed, so without this every job computes the same answer.
+        self._sl_numa_used: dict[int, int] = {}
+        # Round-robin position used to spread jobs across a node's CPUs.
+        self._sl_numa_offset = 0
         if self._sl_numa_enabled:
             numa_mod.capture_original_affinity()
 
@@ -454,24 +460,62 @@ class _SharedLocalExecutor:
 
     # ------------------------------------------------------------------- NUMA
 
-    def _sl_apply_numa(self, request: dict[str, int]) -> None:
-        """Bind the current (worker) thread to a NUMA node for this job."""
+    def _sl_apply_numa(self, request: dict[str, int]) -> tuple[int, int] | None:
+        """Bind the current (worker) thread to a NUMA node for this job.
+
+        Returns the ``(node_index, mem_mb)`` reservation so the caller can release
+        it, or ``None`` when nothing was reserved.
+        """
         if not self._sl_numa_enabled:
-            return
+            return None
+        cores = max(1, int(request.get("cores", 1)))
+        with self._sl_lock:
+            used_per_node = dict(self._sl_numa_used)
+            offset = self._sl_numa_offset
         node = numa_mod.select_node(
             self._sl_topology,
-            cores=request.get("cores", 1),
+            cores=cores,
             mem_mib=request.get("mem_mb"),
+            used_per_node=used_per_node,
         )
         if node is None:
             self.logger.warning(
                 "shared-local: no single NUMA node can host this job "
                 f"({request}); running it without binding."
             )
-            return
-        numa_mod.bind_current_thread(
-            node, cores=request.get("cores", 1), logger=self.logger
+            return None
+        # Advance the round-robin position before binding, so two jobs admitted at
+        # the same moment cannot both be handed the same CPU window.
+        mem = int(request["mem_mb"]) if request.get("mem_mb") else 0
+        with self._sl_lock:
+            self._sl_numa_offset += cores
+            if mem:
+                self._sl_numa_used[node.index] = (
+                    self._sl_numa_used.get(node.index, 0) + mem
+                )
+        binding = numa_mod.bind_current_thread(
+            node, cores=cores, offset=offset, logger=self.logger
         )
+        if not binding.applied:
+            # Nothing was bound, so the optimistic reservation above must be undone
+            # or the node would look permanently busier than it is.
+            self._sl_release_numa((node.index, mem))
+            return None
+        return (node.index, mem)
+
+    def _sl_release_numa(self, placement: tuple[int, int] | None) -> None:
+        """Undo the per-node memory reservation made by :meth:`_sl_apply_numa`."""
+        if placement is None:
+            return
+        node_index, mem = placement
+        if not mem:
+            return
+        with self._sl_lock:
+            remaining = self._sl_numa_used.get(node_index, 0) - mem
+            if remaining > 0:
+                self._sl_numa_used[node_index] = remaining
+            else:
+                self._sl_numa_used.pop(node_index, None)
 
     # ---------------------------------------------------------------- cgroup
 
@@ -615,10 +659,17 @@ class _SharedLocalExecutor:
 
         if not covered_by_group:
             self._sl_acquire(job, request)
-        self._sl_apply_numa(request)
+        placement = self._sl_apply_numa(request)
         try:
             return super().cached_or_run(job, run_func, *args)  # type: ignore[misc]
         finally:
+            # Undo the thread binding before the worker picks up another job.
+            # sched_setaffinity applies to the calling thread, so without this a
+            # worker stays pinned to one job's CPUs for the rest of the run --
+            # including for jobs that never bind at all.
+            if self._sl_numa_enabled:
+                numa_mod.reset_current_thread()
+            self._sl_release_numa(placement)
             if not covered_by_group:
                 self._sl_leases.release(key)
 

@@ -15,6 +15,7 @@ from snakemake_executor_plugin_shared_local.numa import (
     NumaTopology,
     detect_topology,
     reset_current_thread,
+    select_cpus,
     select_node,
 )
 
@@ -235,3 +236,88 @@ class TestReadCpuList:
 
     def test_missing_file_returns_none(self, tmp_path):
         assert numa._read_cpu_list(tmp_path / "nope") is None
+
+
+class TestCpuSelection:
+    """Picking *which* CPUs of a node to bind to.
+
+    Binding every job of an instance to the node's lowest-numbered CPUs stacks all
+    of them onto one core: a real 128-CPU run had 74 concurrent 1-core jobs, all
+    with ``Cpus_allowed_list: 0``, and the host sat at 12.8% utilisation.
+    """
+
+    def test_single_core_jobs_spread_across_the_node(self):
+        n = node(0, ncpus=8)  # cpus 0..7
+        chosen = [select_cpus(n, cores=1, offset=i) for i in range(8)]
+        assert len({tuple(c) for c in chosen}) == 8, (
+            f"1-core jobs must not share a CPU: {chosen}"
+        )
+        assert sorted(cpu for c in chosen for cpu in c) == list(range(8))
+
+    def test_selection_stays_inside_the_node(self):
+        n = node(1, ncpus=8)
+        for offset in range(20):
+            chosen = select_cpus(n, cores=2, offset=offset)
+            assert len(chosen) == 2
+            assert set(chosen) <= set(n.cpus)
+
+    def test_wraps_around_without_leaving_the_node(self):
+        n = node(0, ncpus=4)
+        for offset in range(10):
+            assert set(select_cpus(n, cores=1, offset=offset)) <= set(n.cpus)
+
+    def test_selection_respects_requested_core_count(self):
+        n = node(0, ncpus=16)
+        for cores in (1, 2, 4, 8):
+            assert len(select_cpus(n, cores=cores, offset=0)) == cores
+
+    def test_oversized_request_falls_back_to_the_whole_node(self):
+        """A job wider than the node cannot be spread; use everything available."""
+        n = node(0, ncpus=4)
+        assert sorted(select_cpus(n, cores=64, offset=0)) == sorted(n.cpus)
+
+    def test_offset_zero_is_not_special_cased_to_one_cpu(self):
+        """The first job of a node must not own a CPU the next job will also use."""
+        n = node(0, ncpus=4)
+        first = select_cpus(n, cores=1, offset=0)
+        second = select_cpus(n, cores=1, offset=1)
+        assert first != second, (
+            "consecutive 1-core jobs must get different CPUs, otherwise a whole "
+            "instance funnels onto one core"
+        )
+
+    def test_zero_or_negative_cores_still_yields_one_cpu(self):
+        n = node(0, ncpus=4)
+        assert len(select_cpus(n, cores=0, offset=0)) == 1
+        assert len(select_cpus(n, cores=-3, offset=0)) == 1
+
+    def test_empty_node_returns_nothing(self):
+        empty = NumaNode(index=0, cpus=[], mem_total_mib=1, mem_free_mib=1)
+        assert select_cpus(empty, cores=1, offset=0) == []
+
+
+class TestBindingSpreadsJobs:
+    def test_two_single_core_bindings_do_not_use_the_same_cpu(self):
+        topo = detect_topology()
+        if not topo.available:
+            pytest.skip("single-node machine has nothing to bind")
+        target = topo.nodes[0]
+        original = set(os.sched_getaffinity(0))
+        numa.capture_original_affinity()
+        try:
+            first = numa.bind_current_thread(target, cores=1, offset=0)
+            if not first.applied:
+                pytest.skip("binding unavailable in this environment")
+            cpus_a = set(os.sched_getaffinity(0))
+
+            second = numa.bind_current_thread(target, cores=1, offset=1)
+            if not second.applied:
+                pytest.skip("binding unavailable in this environment")
+            cpus_b = set(os.sched_getaffinity(0))
+        finally:
+            os.sched_setaffinity(0, original)
+
+        assert cpus_a != cpus_b, (
+            "two jobs on the same node were bound to the same CPU, which is the "
+            "bug that capped a 128-core host at 13% utilisation"
+        )
