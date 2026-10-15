@@ -29,7 +29,6 @@ __email__ = "ymq@gzfezx.com"
 __license__ = "MIT"
 
 import os
-import pwd
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +39,7 @@ from .config import (
     NAMESPACES,
     ConfigError,
 )
+from .posix_support import pwd, require_posix
 
 BASE_DIRNAME = "snakemake-shared-local"
 
@@ -213,6 +213,11 @@ def resolve_namespace(
         raise ConfigError(
             f"Invalid namespace {mode!r}: expected one of {', '.join(NAMESPACES)}."
         )
+
+    # Uid/gid-scoped directories and their ownership checks have no Windows
+    # equivalent, so an unsupported platform is reported here rather than as an
+    # AttributeError on ``os.getuid``.
+    require_posix()
 
     uid = os.getuid() if uid is None else uid
     gid = os.getgid() if gid is None else gid

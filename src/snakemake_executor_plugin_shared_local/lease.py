@@ -34,7 +34,6 @@ __license__ = "MIT"
 
 import contextlib
 import errno
-import fcntl
 import json
 import os
 import socket
@@ -50,6 +49,7 @@ from .config import ConfigError
 from .namespace import Namespace
 from .policy import Waiter, fits, should_yield
 from .pool import MEMORY_DIMENSION, canonicalize_pool
+from .posix_support import fcntl
 
 SCHEMA_VERSION = 1
 
