@@ -110,6 +110,125 @@ class TestSettingsShape:
             assert origin is typing.Literal
             assert "auto" in args
 
+    def test_literal_fields_declare_an_explicit_type(self):
+        """Every ``Literal`` field must declare ``metadata["type"] = str``.
+
+        This pins a fix, not a style preference. ``snakemake-interface-common``
+        1.23.1 changed ``PluginBase._parse_type``'s caller from
+
+            elif thefield.type != str and isinstance(thefield.type, type):
+
+        to
+
+            elif thefield.type != str:
+
+        so from 1.23.1 on, every non-``str`` annotation is invoked as a callable
+        when argparse values are written back into the settings dataclass. A
+        ``typing.Literal`` annotation is not callable, so before the fix every
+        ``--shared-local-*`` tri-state flag died with::
+
+            TypeError: Cannot instantiate typing.Literal
+
+        ``get_settings`` checks ``metadata["type"]`` before ``thefield.type``, so
+        declaring ``"type": str`` routes the conversion through ``str()``. The
+        annotation deliberately stays ``Literal`` because that is what makes
+        ``dataclass_field_to_argument_args`` derive the argparse ``choices``.
+
+        This is a whitelist rather than a sweep over every ``Literal`` field so a
+        newly added one is caught instead of silently inherited.
+        """
+        import typing
+
+        literal_fields = {
+            name
+            for name, thefield in self._fields().items()
+            if typing.get_origin(thefield.type) is typing.Literal
+        }
+        assert literal_fields, "no Literal fields found; did the settings change?"
+
+        for name in sorted(literal_fields):
+            thefield = self._fields()[name]
+            assert thefield.metadata.get("type") is str, (
+                f"{name} is annotated Literal but does not declare "
+                f'metadata["type"] = str, so it breaks on '
+                f"snakemake-interface-common >= 1.23.1 with "
+                f"'Cannot instantiate typing.Literal'."
+            )
+
+
+class TestPosixSupport:
+    """An unsupported platform must not take Snakemake down with it.
+
+    Snakemake finds executor plugins by importing every
+    ``snakemake_executor_plugin_*`` package on ``sys.path``, and that scan runs on
+    every invocation. The registry does not catch ``ImportError``, so a bare
+    ``import fcntl`` at module scope would abort *Snakemake itself* on Windows --
+    for every user, including those who never select this executor.
+    """
+
+    def test_is_posix_on_this_platform(self):
+        from snakemake_executor_plugin_shared_local import posix_support
+
+        assert posix_support.is_posix() is True
+
+    def test_require_posix_is_silent_when_supported(self):
+        from snakemake_executor_plugin_shared_local import posix_support
+
+        assert posix_support.require_posix() is None
+
+    def test_missing_module_stub_raises_on_use_not_on_import(self):
+        """The stub must be importable and only fail when actually used."""
+        from snakemake_interface_common.exceptions import WorkflowError
+
+        from snakemake_executor_plugin_shared_local.posix_support import _MissingModule
+
+        stub = _MissingModule("fcntl")
+        assert stub is not None  # constructing/importing it does not raise
+        with pytest.raises(WorkflowError) as excinfo:
+            _ = stub.flock
+
+        message = str(excinfo.value)
+        assert "POSIX" in message
+        assert "fcntl" in message
+
+    def test_require_posix_reports_a_missing_module(self, monkeypatch):
+        """Simulate Windows: the error must name the facility and be actionable."""
+        from snakemake_interface_common.exceptions import WorkflowError
+
+        from snakemake_executor_plugin_shared_local import posix_support
+
+        monkeypatch.setattr(
+            posix_support, "fcntl", posix_support._MissingModule("fcntl")
+        )
+        assert posix_support.is_posix() is False
+        with pytest.raises(WorkflowError) as excinfo:
+            posix_support.require_posix()
+
+        message = str(excinfo.value)
+        assert "fcntl" in message
+        # Point the user at something they can do about it.
+        assert "local executor" in message
+
+    def test_namespace_resolution_reports_unsupported_platform(self, monkeypatch):
+        """A real entry point must surface the POSIX requirement.
+
+        ``resolve_namespace`` is called from the executor's constructor, so
+        checking it here covers the same path without having to stand up a full
+        Snakemake executor instance.
+        """
+        from snakemake_interface_common.exceptions import WorkflowError
+
+        from snakemake_executor_plugin_shared_local import posix_support
+        from snakemake_executor_plugin_shared_local.namespace import resolve_namespace
+
+        monkeypatch.setattr(
+            posix_support, "fcntl", posix_support._MissingModule("fcntl")
+        )
+        with pytest.raises(WorkflowError) as excinfo:
+            resolve_namespace("user")
+
+        assert "POSIX" in str(excinfo.value)
+
 
 class TestRegistryIntegration:
     def test_plugin_is_discoverable_from_source_tree(self):

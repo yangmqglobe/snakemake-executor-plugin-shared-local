@@ -40,6 +40,10 @@ Then select it with `--executor shared-local`. There are **no Python
 dependencies** beyond Snakemake's own plugin interfaces — everything is standard
 library.
 
+> **Platform:** Linux is the supported platform; macOS is expected to work but is
+> not covered by CI. **Windows is not supported** — see
+> [Platform support](#platform-support) for what happens there.
+
 > **Developing the plugin itself?** Snakemake discovers executor plugins by
 > scanning `sys.path` with `pkgutil.iter_modules()` for packages named
 > `snakemake_executor_plugin_*`. A regular or editable install both work: hatchling
@@ -329,6 +333,35 @@ precedence over the config file and being overridden by an explicit CLI flag.
 
 ---
 
+## Platform support
+
+**Linux is the supported platform. macOS is expected to work but is not covered by
+CI. Windows is not supported.**
+
+This plugin is POSIX-only by nature: liveness detection is an `flock`, and the
+`group` and `system` scopes compare Unix ownership. There is no portable
+equivalent of either.
+
+Two details matter on platforms where the POSIX pieces are missing:
+
+- **Discovery still succeeds.** Snakemake finds executor plugins by importing every
+  `snakemake_executor_plugin_*` package on `sys.path`, and that scan happens on
+  *every* Snakemake invocation. An unguarded `import fcntl` would therefore have
+  broken Snakemake itself on Windows — for every user, including those who never
+  select this executor. The POSIX-only imports are resolved defensively so that
+  cannot happen: the package imports cleanly, and only *selecting*
+  `--executor shared-local` reports the problem.
+- **The failure is explanatory, not a traceback.** On an unsupported platform you
+  get a `WorkflowError` naming the missing facility and pointing you at the
+  built-in local executor.
+
+On macOS, `/dev/shm` does not exist, so the coordination directory falls back to
+`$XDG_RUNTIME_DIR` and then `/var/tmp`. NUMA placement (which reads
+`/sys/devices/system/node`) and cgroup enforcement (which needs systemd) both
+disable themselves with a warning rather than failing.
+
+---
+
 ## Development
 
 ```console
@@ -343,6 +376,31 @@ tests launch **real, concurrent `snakemake` processes** and assert the propertie
 that matter: a shared pool is never exceeded, a `SIGKILL`ed instance's leases are
 reclaimed, oversized jobs fail fast instead of hanging, group (`pipe`) jobs do not
 self-deadlock, and pool conflicts are refused.
+
+CI runs the suite against several Snakemake releases, including one job that forces
+the newest `snakemake-interface-common`, so a break in how Snakemake's plugin
+settings layer interprets the settings dataclass is caught there rather than by
+users.
+
+---
+
+## Releasing
+
+Releases are driven by [Release Please](https://github.com/googleapis/release-please)
+from [Conventional Commits](https://www.conventionalcommits.org/): merge a `fix:` or
+`feat:` commit to `main`, review the release pull request it opens, and merge it.
+That tags the version, publishes a GitHub Release, and the same workflow uploads the
+distribution to PyPI using
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OpenID Connect), so
+no long-lived PyPI token is stored in this repository.
+
+The conda recipe lives in `packaging/bioconda/meta.yaml` for reference. The first
+version has to be submitted to
+[bioconda-recipes](https://github.com/bioconda/bioconda-recipes) by hand; after
+that, bioconda's `autobump` bot scans PyPI hourly and opens its own update pull
+requests. Note that `autobump` updates the version and checksums only — if a
+release changes the dependency requirements, the recipe must be updated by hand
+too.
 
 ## License
 

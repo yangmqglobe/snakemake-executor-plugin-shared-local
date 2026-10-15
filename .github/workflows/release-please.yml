@@ -4,14 +4,129 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: write
-  pull-requests: write
-
+# Permissions are granted per job rather than globally: `contents: write` is
+# needed only to create the tag and release, and the jobs that execute this
+# project's build backend must not hold it.
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           release-type: python
+
+  # Building and publishing are separate jobs on purpose. `python -m build`
+  # executes this project's build backend, so running it in the publishing job
+  # would hand build-time code the `id-token: write` privilege that mints the
+  # PyPI upload credential. Building in a job that cannot reach PyPI keeps that
+  # privilege scoped to the one step that needs it.
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the distribution
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Show the artifacts
+        run: ls -l dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Release Please runs on a push to main rather than off a green CI run, so this
+  # path does not inherit "the tests passed". Verifying the exact artifact that is
+  # about to be uploaded matters here: PyPI releases are immutable, so a bad
+  # upload can only be corrected by burning a new version number.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the wheel and run a real workflow
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/python -m pip install --upgrade pip
+          # Snakemake is deliberately not a runtime dependency of the plugin (it
+          # only needs the interface packages), so it must be requested explicitly
+          # to obtain the `snakemake` entry point.
+          /tmp/verify/bin/python -m pip install snakemake
+          /tmp/verify/bin/python -m pip install --no-deps dist/*.whl
+          /tmp/verify/bin/python -c "
+          from snakemake_interface_executor_plugins.registry import ExecutorPluginRegistry
+          assert 'shared-local' in ExecutorPluginRegistry().get_registered_plugins(), \
+              'the built wheel is not discoverable by Snakemake'
+          print('wheel is discoverable')
+          "
+          mkdir -p /tmp/verify-wf
+          cat > /tmp/verify-wf/Snakefile <<'EOF'
+          rule all:
+              input: "out.txt"
+          rule make:
+              output: "out.txt"
+              shell: "echo ok > {output}"
+          EOF
+          cd /tmp/verify-wf
+          /tmp/verify/bin/snakemake -s Snakefile --executor shared-local -c 1 \
+            --shared-local-numa-bind off --shared-local-dir /tmp/verify-leases
+          grep -q ok out.txt
+          echo "wheel verified"
+
+  # Publishes with PyPI Trusted Publishing (OIDC), so no long-lived API token is
+  # stored in this repository. `id-token: write` is scoped to this job because the
+  # repository's default workflow permission is read-only.
+  #
+  # The pending publisher configured on PyPI must match exactly:
+  #   Owner=yangmqglobe  Repository=snakemake-executor-plugin-shared-local
+  #   Workflow=release-please.yml  Environment=pypi
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: pypi
+      url: https://pypi.org/p/snakemake-executor-plugin-shared-local
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # No user/password: the upload credential is exchanged from the OIDC
+          # token granted by `id-token: write` above, and signed attestations are
+          # generated from the same identity.
+          attestations: true

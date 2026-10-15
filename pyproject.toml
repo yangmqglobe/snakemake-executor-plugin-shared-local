@@ -12,6 +12,9 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Natural Language :: English",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -25,7 +28,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/your/plugin"
+Homepage = "https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local"
+Repository = "https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local"
+Issues = "https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues"
 Documentation = "https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/shared-local.html"
 
 [project.optional-dependencies]
@@ -33,6 +38,7 @@ dev = [
     "snakemake>=9.11",
     "pytest>=7.4",
     "pytest-cov>=4.1",
+    "pytest-timeout>=2.3",
     "ruff>=0.6",
     "build",
     "twine",
@@ -40,6 +46,12 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/snakemake_executor_plugin_shared_local"]
+
+# packaging/bioconda/ holds the conda recipe kept in this repository for
+# reference. It is deliberately excluded from the sdist: the recipe is consumed
+# by bioconda-recipes, not by anyone installing this distribution from PyPI.
+[tool.hatch.build.targets.sdist]
+exclude = ["packaging/"]
 
 [tool.coverage.run]
 omit = [".*", "*/site-packages/*", "Snakefile", "tests/*"]
