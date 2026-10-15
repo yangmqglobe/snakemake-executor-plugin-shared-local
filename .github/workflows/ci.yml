@@ -11,14 +11,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Cover the oldest interface the plugin claims to support and the newest.
-        snakemake: ["9.11", "9.13", "9.25", "latest"]
+        # Exact pins, deliberately. These used to be ``~=9.11``/``~=9.13``/``~=9.25``,
+        # which is ``>=X,<10`` -- so all three resolved to the newest 9.x and the
+        # matrix silently tested one version four times. ``~=`` here would hide
+        # exactly the version-specific breakage the matrix exists to catch.
+        #
+        # The oldest entries matter because pip resolves them to a *newer*
+        # snakemake-interface-common (1.24.0) than recent Snakemake releases get
+        # (1.23.0), and 1.23.1 changed how plugin settings are parsed. Snakemake
+        # 9.11-9.15 therefore exercise a code path 9.16+ does not.
+        snakemake: ["9.11.9", "9.13.7", "9.15.0", "9.27.0", "latest"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install
         run: |
@@ -27,7 +36,7 @@ jobs:
           if [ "${{ matrix.snakemake }}" = "latest" ]; then
             pip install snakemake
           else
-            pip install "snakemake~=${{ matrix.snakemake }}"
+            pip install "snakemake==${{ matrix.snakemake }}"
           fi
           # Editable is fine here: hatchling writes a .pth holding the real src
           # path, which Snakemake's pkgutil-based discovery can see.
@@ -36,7 +45,7 @@ jobs:
       - name: Show versions
         run: |
           python -c "import snakemake; print('snakemake', snakemake.__version__)"
-          python -c "import snakemake_interface_executor_plugins as m; print('interface', m.__file__)"
+          python -c "import snakemake_interface_common as m; print('interface-common', getattr(m, '__version__', '?'))"
 
       - name: Verify the plugin is discoverable
         run: |
@@ -52,6 +61,38 @@ jobs:
           # Let coverage see the Snakemake subprocesses the integration tests spawn.
           COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
         run: python -m pytest tests -q --cov=snakemake_executor_plugin_shared_local --cov-report=term-missing
+
+  # Guards the settings-parsing fix against the *newest* interface, which is what
+  # users get when pip is free to upgrade. Only recent Snakemake versions are
+  # tested here because an unsupported interface/old-Snakemake pairing is not a
+  # combination anyone installs.
+  newest-interface:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install with the newest plugin interface
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout snakemake
+          # --no-deps is required, and not just for speed. The newest
+          # snakemake-interface-common requires packaging>=26.1 while every
+          # current Snakemake release pins packaging<26, so a dependency-solving
+          # upgrade would resolve that conflict by *uninstalling Snakemake* --
+          # leaving the job green-less or testing nothing. Forcing just the two
+          # interface packages keeps Snakemake installed and exercises the exact
+          # combination this job exists to guard.
+          pip install --upgrade --no-deps \
+            snakemake-interface-common snakemake-interface-executor-plugins
+          pip install --no-deps -e .
+      - name: Show versions
+        run: |
+          python -c "import snakemake; print('snakemake', snakemake.__version__)"
+          python -c "import snakemake_interface_common as m; print('interface-common', getattr(m, '__version__', '?'))"
+      - name: Settings must still parse
+        run: python -m pytest tests/test_plugin.py -q --timeout=300
 
   lint:
     runs-on: ubuntu-latest
@@ -74,3 +115,42 @@ jobs:
       - run: pip install build twine
       - run: python -m build
       - run: python -m twine check dist/*
+      - name: The sdist must not carry the conda recipe
+        run: |
+          python - <<'EOF'
+          import tarfile, glob
+          sdist = glob.glob("dist/*.tar.gz")[0]
+          names = tarfile.open(sdist).getnames()
+          assert not any("/packaging/" in n for n in names), "packaging/ leaked into the sdist"
+          print("ok:", sdist, "carries", len(names), "entries")
+          EOF
+      # Installing the *wheel* into a clean interpreter is what proves the
+      # published artifact works. ``pip install -e .`` in the jobs above cannot:
+      # it puts the real ``src/`` on the path and would mask a packaging mistake.
+      - name: Install the built wheel and run a real workflow
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/python -m pip install --upgrade pip
+          # Snakemake itself is deliberately not a dependency of the plugin (it
+          # only needs the interface packages), so it has to be requested
+          # explicitly to get the ``snakemake`` entry point.
+          /tmp/smoke/bin/python -m pip install snakemake
+          /tmp/smoke/bin/python -m pip install --no-deps dist/*.whl
+          /tmp/smoke/bin/python -c "
+          from snakemake_interface_executor_plugins.registry import ExecutorPluginRegistry
+          assert 'shared-local' in ExecutorPluginRegistry().get_registered_plugins()
+          print('wheel is discoverable')
+          "
+          mkdir -p /tmp/smoke-wf
+          cat > /tmp/smoke-wf/Snakefile <<'EOF'
+          rule all:
+              input: "out.txt"
+          rule make:
+              output: "out.txt"
+              shell: "echo smoke > {output}"
+          EOF
+          cd /tmp/smoke-wf
+          /tmp/smoke/bin/snakemake -s Snakefile --executor shared-local -c 1 \
+            --shared-local-numa-bind off --shared-local-dir /tmp/smoke-leases
+          grep -q smoke out.txt
+          echo "wheel smoke test passed"

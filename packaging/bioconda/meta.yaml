@@ -1,0 +1,66 @@
+# Reference copy of the bioconda recipe for this plugin.
+#
+# This file is deliberately NOT part of the released distribution: it is excluded
+# from the sdist via [tool.hatch.build.targets.sdist] in pyproject.toml. Conda
+# recipes are consumed from bioconda-recipes, not from a PyPI sdist.
+#
+# To submit a new version:
+#   1. Publish to PyPI first (release-please does this; see README "Releasing").
+#   2. Fill in `version` below and recompute the checksum:
+#        curl -sL https://pypi.org/packages/source/s/snakemake-executor-plugin-shared-local/snakemake_executor_plugin_shared_local-<VERSION>.tar.gz | sha256sum
+#   3. Copy this file to recipes/snakemake-executor-plugin-shared-local/meta.yaml
+#      in a fork of bioconda/bioconda-recipes and open a PR titled
+#      "Add snakemake-executor-plugin-shared-local".
+#
+# Only this first submission is manual. After the recipe exists, bioconda's
+# autobump bot scans PyPI hourly and opens its own update PRs (auto-merged by
+# Mergify once tests pass). Note that autobump rewrites the version and checksums
+# only -- if a release changes the dependency requirements below, update them by
+# hand as well.
+{% set name = "snakemake-executor-plugin-shared-local" %}
+{% set version = "0.1.3" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  # This exact URL form matters: it is what bioconda's PyPI hoster matches to
+  # discover new versions for autobump. Do not switch it to a GitHub URL.
+  url: https://pypi.org/packages/source/{{ name[0] }}/{{ name }}/snakemake_executor_plugin_shared_local-{{ version }}.tar.gz
+  sha256: REPLACE_WITH_THE_PYPI_SDIST_SHA256
+
+build:
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vvv --no-deps --no-build-isolation --no-cache-dir
+  number: 0
+  run_exports:
+    # 0.x versions may break between minor releases, so pin to x.x.
+    - {{ pin_subpackage(name, max_pin="x.x") }}
+
+requirements:
+  host:
+    - python >=3.11,<4.0
+    - hatchling
+    - pip
+  run:
+    - python >=3.11.0,<4.0.0
+    - snakemake-interface-common >=1.22.0,<2.0.0
+    - snakemake-interface-executor-plugins >=9.3.9,<10.0.0
+
+test:
+  imports:
+    - snakemake_executor_plugin_shared_local
+
+about:
+  home: https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local
+  summary: A Snakemake executor plugin that coordinates multiple local Snakemake instances sharing one machine.
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  dev_url: https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local
+  doc_url: https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/shared-local.html
+
+extra:
+  recipe-maintainers:
+    - yangmqglobe
