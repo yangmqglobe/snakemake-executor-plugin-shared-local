@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 by [Release Please](https://github.com/googleapis/release-please) from
 conventional commits.
 
+## [0.1.3](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.2...v0.1.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* prepare for PyPI and bioconda release ([#9](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/9)) ([8239dbe](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/8239dbe30ebe16e81a76f4a0f8dd5835f70355fd))
+
 ## [0.1.2](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.1...v0.1.2) (2026-10-14)
 
 
