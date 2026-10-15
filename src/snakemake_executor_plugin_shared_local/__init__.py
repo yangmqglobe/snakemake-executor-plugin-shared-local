@@ -49,6 +49,7 @@ from .lease import AdmissionImpossible, LeaseError, LeaseManager, normalize_reso
 from .namespace import resolve_namespace
 from .policy import probe_priority
 from .pool import MEMORY_DIMENSION, compute_pool
+from .posix_support import require_posix
 
 # Required by the plugin registry: this plugin executes locally.
 common_settings = CommonSettings(
@@ -81,11 +82,37 @@ class ExecutorSettings(ExecutorSettingsBase):
     CLI generator only forwards it when the metadata opts in, so without it the
     documented environment variables are silently inert. ``configargparse`` then
     applies the precedence CLI > environment > config file > default.
+
+    The ``Literal`` fields additionally declare ``"type": str`` explicitly. This is
+    load-bearing, not decorative. ``snakemake-interface-common`` 1.23.1 (released
+    2026-09-07) changed ``PluginBase._parse_type``'s caller from
+
+        elif thefield.type != str and isinstance(thefield.type, type):
+    to
+        elif thefield.type != str:
+
+    so from that version on *every* non-``str`` annotation is invoked as a callable
+    when the parsed argparse values are written back into the dataclass. A
+    ``typing.Literal`` annotation is not callable, so ``--shared-local-cgroup on``
+    failed with::
+
+        TypeError: Cannot instantiate typing.Literal
+
+    ``get_settings`` consults ``metadata["type"]`` *before* falling back to
+    ``thefield.type``, so declaring ``"type": str`` routes the conversion through
+    ``str(value)`` and avoids the callable entirely. The annotation stays
+    ``Literal`` so that ``dataclass_field_to_argument_args`` keeps deriving the
+    argparse ``choices`` from it (verified: an invalid value is still rejected with
+    "invalid choice"). ``snakemake-interface-common>=1.23.1`` is what makes this a
+    hard requirement rather than a preference: without it the plugin cannot be
+    loaded at all on the interface versions that pip resolves for Snakemake
+    9.11-9.15.
     """
 
     namespace: Literal["auto", "user", "group", "system"] = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": (
                 "Coordination scope. 'user' (default) shares resources between this "
@@ -131,6 +158,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     pool_conflict: Literal["auto", "error", "warn"] = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": (
                 "What to do when instances sharing a namespace declare different "
@@ -183,6 +211,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     numa_bind: TriState = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": (
                 "Pin each job to the NUMA node with the most free capacity. 'auto' "
@@ -194,6 +223,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     cgroup: TriState = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": (
                 "Wrap jobs in a cgroup v2 scope so the kernel enforces CPU and memory "
@@ -208,6 +238,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     require_mem: TriState = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": (
                 "Fail when a job declares no mem_mb instead of skipping memory "
@@ -218,6 +249,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     record_rule: TriState = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": (
                 "Record rule names in lease files. 'auto' (default) records them "
@@ -228,6 +260,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     gc_report: TriState = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": "Report stale lease files that could not be removed.",
         },
@@ -235,6 +268,7 @@ class ExecutorSettings(ExecutorSettingsBase):
     verbose_leases: TriState = field(
         default=AUTO,
         metadata={
+            "type": str,
             "env_var": True,
             "help": "Log every admission, wait and collection decision.",
         },
@@ -292,6 +326,11 @@ class _SharedLocalExecutor:
 
     def __post_init__(self) -> None:
         super().__post_init__()  # type: ignore[misc]
+        # Checked before any other work so an unsupported platform produces one
+        # explanatory error instead of an AttributeError from inside the
+        # coordination layer. The module-level imports are already guarded, so
+        # this is about the *user* seeing why their flag cannot work.
+        require_posix()
         self._sl_lock = threading.RLock()
         self._sl_covered: dict[Any, int] = {}
         self._sl_mem_warned = False
