@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 by [Release Please](https://github.com/googleapis/release-please) from
 conventional commits.
 
+## [0.1.4](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.3...v0.1.4) (2026-10-21)
+
+
+### Bug Fixes
+
+* make shared-scope lock files usable by every participant ([#12](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/12)) ([43006ec](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/commit/43006ec77c2adf48404423a2b3332f0f0a4aaac9)), closes [#11](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/issues/11)
+
 ## [0.1.3](https://github.com/yangmqglobe/snakemake-executor-plugin-shared-local/compare/v0.1.2...v0.1.3) (2026-10-15)
 
 
