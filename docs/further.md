@@ -35,6 +35,13 @@ mismatch means each process believes the machine is a different size and the glo
 limit quietly becomes fiction. Use `--shared-local-pool-conflict warn` to downgrade
 that to a warning.
 
+Lock files (`admit.lock`, instance claims) are published `0644` and locked with
+`flock`, which needs no write permission, so any participant can lock a file another
+user created. The directory's own mode decides who may create entries in the first
+place. Before 0.1.4 lock files were opened for writing, which made a shared scope
+work only for the user who created them; after upgrading, `rm` a stale `0600`
+`admit.lock` you own and it is recreated `0644`.
+
 ### This is coordination, not a security boundary
 
 Participants report their own resource usage, so this is a **cooperative protocol

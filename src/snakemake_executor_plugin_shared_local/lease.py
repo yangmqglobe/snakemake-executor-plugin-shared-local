@@ -25,6 +25,10 @@ Two further details matter for correctness:
 * Files are explicitly ``fchmod``-ed to ``0644``. Under ``umask 077`` the default
   ``0600`` would make them unreadable to other users, whose usage would then be
   invisible and oversubscription would follow silently.
+* A file we may not write is opened read-only instead (see
+  :func:`_open_for_lock`). ``flock`` needs no write permission, so a peer's
+  ``0644`` lock file is still a working mutex; requiring ``O_RDWR`` made shared
+  scopes usable only by whoever created the files first.
 """
 
 __author__ = "ymq"
@@ -676,14 +680,95 @@ def _sanitize(name: str) -> str:
 
 
 def _open_locked(path: Path, *, blocking: bool = False) -> int:
-    """Open ``path`` and take an exclusive flock."""
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, FILE_MODE)
+    """Open ``path`` and take an exclusive flock.
+
+    A file that cannot be opened at all becomes a :class:`LeaseError` naming it,
+    rather than a bare ``PermissionError`` escaping from the middle of admission.
+    The fallback in :func:`_open_for_lock` handles every file this process may
+    read, so what reaches here is state an operator has to fix.
+    """
+    try:
+        fd = _open_for_lock(path, create=True)
+    except PermissionError as err:
+        raise LeaseError(_lock_failure_message(path, err)) from None
     try:
         flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(fd, flags)
     except OSError:
         os.close(fd)
         raise
+    return fd
+
+
+def _lock_failure_message(path: Path, err: PermissionError) -> str:
+    """Explain an unopenable lock file, and what to do about it."""
+    if not path.exists():
+        return (
+            f"Cannot create lock file {path}: {err}. Its directory must be writable "
+            "by this process; ask an administrator to fix its permissions."
+        )
+    owner, mode = _uid_of(path), _mode_of(path)
+    message = (
+        f"Cannot open lock file {path} for locking: {err}. It is owned by uid "
+        f"{owner} with mode {mode}, and this process cannot open it at all."
+    )
+    if owner == os.getuid():
+        message += (
+            f" Remove it and it is recreated with mode {FILE_MODE:04o}: rm {path}"
+        )
+    else:
+        message += (
+            " Ask its owner to remove it (0.1.3 created these as 0600 under "
+            f"umask 077), or remove it yourself if the directory is writable: rm {path}"
+        )
+    return message
+
+
+def _open_for_lock(path: Path, *, create: bool = False) -> int:
+    """Open ``path`` for locking, falling back to read-only when not writable.
+
+    Lock files are created with :data:`FILE_MODE` (``0644``) so that peers can
+    read them, which means a *peer's* file is not writable by us. Opening it
+    ``O_RDWR`` would then fail with ``EACCES`` -- that is the case in the ``group``
+    and ``system`` scopes, where the first user to run creates ``admit.lock`` and
+    everybody else gets ``PermissionError``.
+
+    ``flock`` needs no write access (unlike POSIX ``fcntl`` locks), so retrying
+    ``O_RDONLY`` keeps the lock fully functional while leaving the published
+    modes untouched. Without this fallback a shared scope only ever worked for
+    the user who happened to create the file first.
+
+    Two consequences are worth knowing, and neither is a silent degrade:
+
+    * A file this process cannot open *at all* still maps to "held" in
+      :func:`_try_lock_read`. Its content is then reported as :class:`_Unreadable`
+      (loud, and fatal in a shared scope), so it can never look like a phantom
+      live lease that quietly withholds capacity.
+    * On filesystems whose ``flock`` is emulated through POSIX record locks (some
+      NFS mounts), a read-only descriptor may be refused. That fails explicitly
+      instead of locking incorrectly. The default namespaces live on tmpfs.
+    """
+    flags = (os.O_CREAT if create else 0) | os.O_RDWR
+    try:
+        fd = os.open(path, flags, FILE_MODE)
+    except PermissionError as err:
+        # Either the file exists and we may not write it (a peer published it
+        # 0644), or -- when creating -- the directory is not writable. A read-only
+        # open separates the two without a second stat: it succeeds for a peer's
+        # file and fails for a missing one. Re-raising the *original* error keeps
+        # "the directory is not writable" from being reported as FileNotFoundError.
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            raise err from None
+    if create:
+        # ``os.open``'s mode argument is masked by the umask, so under ``umask 077``
+        # the lock file would be ``0600`` and peers could neither read nor lock it.
+        # Files created here are the shared lock files (``admit.lock``, instance
+        # claims), so widen them explicitly like every other published entry. This
+        # also repairs a 0600 file we own left behind by 0.1.3.
+        with contextlib.suppress(OSError):
+            os.fchmod(fd, FILE_MODE)
     return fd
 
 
@@ -697,7 +782,7 @@ def _unlock_close(fd: int) -> None:
 def _try_lock_read(path: Path) -> int | None:
     """Try to take an exclusive lock; return the fd on success, ``None`` if held."""
     try:
-        fd = os.open(path, os.O_RDWR)
+        fd = _open_for_lock(path)
     except OSError:
         return None
     try:

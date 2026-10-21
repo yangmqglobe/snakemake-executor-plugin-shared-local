@@ -105,6 +105,24 @@ sudo mkdir -p /dev/shm/snakemake-shared-local/shared
 sudo chmod 1777 /dev/shm/snakemake-shared-local/shared
 ```
 
+Lock files (`admit.lock`, instance claims) are published `0644` and locked with
+`flock`, which needs no write permission. Any participant can therefore lock a
+file another user created; the directory's own mode is what decides who may
+*create* entries in the first place.
+
+#### Upgrading from 0.1.3
+
+0.1.3 opened lock files `O_RDWR`, so in a shared scope only the user who created
+them could run, and `umask 077` could leave `admit.lock` as `0600`. After
+upgrading, remove a stale file owned by you once and it is recreated `0644`:
+
+```console
+rm /dev/shm/snakemake-shared-local/g<gid>/admit.lock
+```
+
+A file owned by another user is repaired by that user, or by removing it yourself
+(the namespace directory is group/world writable in the `group`/`system` scopes).
+
 ### This is coordination, not a security boundary
 
 Participants report their own resource usage, so this is a **cooperative

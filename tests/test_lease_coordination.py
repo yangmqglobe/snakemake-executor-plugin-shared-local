@@ -9,6 +9,7 @@ import contextlib
 import fcntl
 import json
 import os
+import stat
 import time
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from snakemake_executor_plugin_shared_local.lease import (
     LeaseEntry,
     LeaseError,
     LeaseManager,
+    _open_locked,
     _read_json,
     _read_lease,
     _sanitize,
@@ -287,6 +289,75 @@ class TestLowLevelHelpers:
     def test_try_lock_read_returns_none_for_missing_file(self, tmp_path):
         assert _try_lock_read(tmp_path / "nope") is None
 
+    def test_try_lock_read_works_on_read_only_peer_file(self, tmp_path):
+        """A peer's ``0644`` lock file must still be lockable, not "held".
+
+        Regression: ``_try_lock_read`` opened ``O_RDWR`` and mapped every
+        ``OSError`` to ``None``, so a file owned by another user was
+        indistinguishable from one whose lock is held. Dead peers were then
+        counted as live forever and their resources never returned to the pool.
+        """
+        path = tmp_path / "peer.lease"
+        path.write_text(json.dumps({"version": SCHEMA_VERSION, "resources": {}}))
+        os.chmod(path, 0o444)  # readable, not writable: what a peer publishes
+
+        fd = _try_lock_read(path)
+        assert fd is not None, "a readable, unlocked file must be lockable"
+        _unlock_close(fd)
+
+    def test_dead_peer_lease_does_not_hold_pool_capacity(self, tmp_path):
+        """A dead peer's ``0444`` lease must count as zero, not as live forever.
+
+        The same conflation as above, one level up: ``snapshot()`` treated "cannot
+        open" as "lock held", so every lease a peer had published stayed live after
+        that peer exited. Nothing was logged and the pool shrank monotonically
+        until all instances stalled.
+        """
+        ns = make_ns(tmp_path, mode="group")
+        stale = ns.path / f"peer-1-abc{LEASE_SUFFIX}"
+        stale.write_text(
+            json.dumps({"version": SCHEMA_VERSION, "resources": {"cores": 3}})
+        )
+        os.chmod(stale, 0o444)  # published 0644 by a peer, not writable by us
+
+        used, warnings = manager(ns, pool={"cores": 8}, instance_id="me").snapshot()
+        assert used == {}, f"a dead peer's lease must consume nothing, got {used}"
+        assert warnings == []
+
+    def test_dead_peer_instance_claim_is_not_active(self, tmp_path):
+        """A dead peer's ``0444`` claim must not be reported as a live instance."""
+        ns = make_ns(tmp_path, mode="group")
+        claim = ns.path / f"peer-9-xyz{INSTANCE_SUFFIX}"
+        claim.write_text("{}")
+        os.chmod(claim, 0o444)
+
+        m = manager(ns, pool={"cores": 8}, instance_id="me")
+        assert m.active_instances() == []
+
+    def test_unopenable_lock_file_raises_an_explanatory_error(self, tmp_path):
+        """A lock file we cannot open at all must name itself and the remedy.
+
+        Reachable from 0.1.3, which created ``admit.lock`` as ``0600`` under
+        ``umask 077``: a peer then cannot open it even read-only. Escaping as a
+        bare ``PermissionError`` from inside ``acquire()`` is what made the
+        original bug look like a traceback rather than a fixable state.
+        """
+        if os.getuid() == 0:  # pragma: no cover - root can always open
+            pytest.skip("root bypasses file permissions")
+        path = tmp_path / "admit.lock"
+        path.write_bytes(b"")
+        os.chmod(path, 0o000)
+        try:
+            with pytest.raises(LeaseError) as info:
+                _open_locked(path, blocking=True)
+            message = str(info.value)
+            assert str(path) in message
+            assert "mode 0o0" in message
+            # The contract _read_lease depends on must be unchanged.
+            assert _try_lock_read(path) is None
+        finally:
+            os.chmod(path, 0o644)
+
     def test_lease_entry_exposes_resources_and_instance(self, tmp_path):
         path = tmp_path / "x.lease"
         path.write_text("{}")
@@ -547,3 +618,50 @@ class TestCrossInstanceContention:
         assert sorted(served) == ["a", "b"], (
             f"both waiters must be served, got {served}"
         )
+
+
+class TestSharedScopeLockFiles:
+    """Files published by one user must be usable by the others in the scope.
+
+    Regression: ``admit.lock`` was opened ``O_RDWR`` without a fallback, so the
+    ``group`` and ``system`` scopes only worked for whoever created it first.
+    Every other user got ``PermissionError: .../admit.lock``.
+    """
+
+    def test_admit_lock_is_created_readable_for_peers(self, tmp_path):
+        """``umask 077`` must not leave the lock file ``0600``."""
+        ns = make_ns(tmp_path, mode="group")
+        m = manager(ns, pool={"cores": 2}, instance_id="first")
+        old = os.umask(0o077)
+        try:
+            m.acquire("j", {"cores": 1})
+        finally:
+            os.umask(old)
+        m.release("j")
+
+        lock = ns.path / "admit.lock"
+        assert lock.exists(), "admission must have created the lock file"
+        mode = stat.S_IMODE(os.stat(lock).st_mode)
+        assert mode & 0o044 == 0o044, (
+            f"admit.lock mode {oct(mode)} is not readable by peers; "
+            "a shared scope cannot coordinate"
+        )
+
+    def test_admission_succeeds_when_admit_lock_is_not_writable(self, tmp_path):
+        """A peer's lock file is readable but not writable; admission must work.
+
+        This is the exact situation of the second user in a ``group`` scope: the
+        first user created ``admit.lock`` as ``0644``, so opening it ``O_RDWR``
+        raises ``EACCES``. ``flock`` does not need write access, so it must fall
+        back to a read-only descriptor instead of failing.
+        """
+        ns = make_ns(tmp_path, mode="group")
+        # Pre-create the lock the way a peer would have left it.
+        lock = ns.path / "admit.lock"
+        lock.write_bytes(b"")
+        os.chmod(lock, 0o444)
+
+        m = manager(ns, pool={"cores": 4}, instance_id="second")
+        handle = m.acquire("j", {"cores": 1})
+        assert handle.path.exists()
+        m.release("j")
